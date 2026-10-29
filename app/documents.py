@@ -1,3 +1,9 @@
+"""Inspect DOCX packages and apply constrained OOXML text, formatting, and table edits.
+
+Only the main document XML is rewritten; other package-part payloads are preserved.
+The rich preview resolves supported formatting but is not Word's pagination engine.
+"""
+
 from collections import defaultdict
 from difflib import SequenceMatcher
 from hashlib import sha256
@@ -22,6 +28,8 @@ INVALID_XML = re.compile("[\x00-\x08\x0b\x0c\x0e-\x1f\ud800-\udfff\ufffe\uffff]"
 
 
 class Block(BaseModel):
+    """Indexed paragraph text, preview formatting, and editability/conversion metadata."""
+
     id: str
     text: str
     kind: Literal["paragraph", "heading", "table", "list"]
@@ -33,6 +41,8 @@ class Block(BaseModel):
 
 
 class ParagraphFormat(BaseModel):
+    """Supported whole-block properties; None means unspecified rather than a reset."""
+
     model_config = ConfigDict(extra="forbid")
     color: str | None = None
     font_size_pt: float | None = None
@@ -43,22 +53,30 @@ class ParagraphFormat(BaseModel):
 
 
 class PreviewRun(BaseModel):
+    """A text fragment with resolved supported formatting for the browser preview."""
+
     text: str
     format: ParagraphFormat
 
 
 class PreviewCell(BaseModel):
+    """Table-cell preview containing indexed blocks and a bounded column span."""
+
     blocks: list[Block]
     colspan: int = 1
 
 
 class PreviewNode(BaseModel):
+    """An ordered main-body paragraph or table node for the rich browser preview."""
+
     kind: Literal["paragraph", "table"]
     blocks: list[Block] = []
     rows: list[list[PreviewCell]] = []
 
 
 class FormatEdit(BaseModel):
+    """Whole-block formatting change guarded by the block's exact original text."""
+
     model_config = ConfigDict(extra="forbid")
     block_id: str
     original: str
@@ -66,6 +84,8 @@ class FormatEdit(BaseModel):
 
 
 class TableEdit(BaseModel):
+    """Conversion of consecutive source paragraphs into rectangular table rows."""
+
     model_config = ConfigDict(extra="forbid")
     block_ids: list[str]
     originals: list[str]
@@ -74,6 +94,8 @@ class TableEdit(BaseModel):
 
 
 class Edit(BaseModel):
+    """Replacement of a uniquely matching, nonempty substring in an editable block."""
+
     model_config = ConfigDict(extra="forbid")
     block_id: str
     original: str
@@ -81,6 +103,8 @@ class Edit(BaseModel):
 
 
 class EditPlan(BaseModel):
+    """A reviewable summary and up to 50 validated text, formatting, or table operations."""
+
     model_config = ConfigDict(extra="forbid")
     summary: str
     edits: list[Edit]
@@ -89,6 +113,8 @@ class EditPlan(BaseModel):
 
 
 class Change(BaseModel):
+    """Before/after text and an optional description of a validated proposed operation."""
+
     block_id: str
     before: str
     after: str
@@ -97,6 +123,7 @@ class Change(BaseModel):
 
 
 def _properties(parent: etree._Element, name: str) -> etree._Element:
+    """Find a Word properties child or create it at the start of its parent."""
     found = parent.find(W + name)
     if found is None:
         found = etree.Element(W + name)
@@ -105,6 +132,7 @@ def _properties(parent: etree._Element, name: str) -> etree._Element:
 
 
 def _set_property(parent: etree._Element, name: str, value: str, before: tuple[str, ...]) -> None:
+    """Set a w:val property, inserting new nodes before the specified later siblings."""
     node = parent.find(W + name)
     if node is None:
         node = etree.Element(W + name)
@@ -114,10 +142,12 @@ def _set_property(parent: etree._Element, name: str, value: str, before: tuple[s
 
 
 def _valid_text(text: str) -> bool:
+    """Return whether text is XML-safe and contains no tabs or paragraph line breaks."""
     return not INVALID_XML.search(text) and not any(char in text for char in "\r\n\t")
 
 
 def _format_values(properties: etree._Element | None) -> dict[str, object]:
+    """Extract supported explicit run properties, leaving unsupported values inherited."""
     values: dict[str, object] = {}
     if properties is None:
         return values
@@ -145,6 +175,7 @@ def _format_values(properties: etree._Element | None) -> dict[str, object]:
 
 
 def _xml(data: bytes) -> etree._Element:
+    """Parse XML without DTD loading or entity expansion, rejecting malformed input."""
     try:
         tree = etree.fromstring(data, parser=etree.XMLParser(
             resolve_entities=False, no_network=True, load_dtd=False,
@@ -157,6 +188,7 @@ def _xml(data: bytes) -> etree._Element:
 
 
 def _text_nodes(paragraph: etree._Element) -> list[etree._Element]:
+    """Return text nodes owned by this paragraph, excluding nested paragraph content."""
     return [
         node for node in paragraph.iter(W + "t")
         if next(node.iterancestors(W + "p"), None) is paragraph
@@ -164,6 +196,7 @@ def _text_nodes(paragraph: etree._Element) -> list[etree._Element]:
 
 
 def _read_only_reason(paragraph: etree._Element) -> str | None:
+    """Explain unsafe or complex paragraph content, returning None for supported runs."""
     complex_ancestors = {W + name for name in (
         "sdt", "ins", "del", "txbxContent", "customXml", "moveFrom", "moveTo",
     )}
@@ -185,7 +218,15 @@ def _read_only_reason(paragraph: etree._Element) -> str | None:
 
 
 class WordDocument:
+    """Validated DOCX snapshot with stable block IDs and non-mutating proposal operations."""
+
     def __init__(self, data: bytes, name: str) -> None:
+        """Validate package limits and protection, then index readable main-body paragraphs.
+
+        Derive the snapshot version from the original bytes and retain every ZIP part.
+        Reject encrypted, protected, signed, macro-enabled, unsafe, or unreadable files
+        with DemoError. Complex readable paragraphs remain visible but read-only.
+        """
         if not name.lower().endswith(".docx"):
             raise DemoError("Choose a .docx file. Legacy .doc and macro-enabled files are not supported.")
         if len(data) > MAX_FILE_BYTES:
@@ -320,6 +361,7 @@ class WordDocument:
             self.warnings.append("Existing tracked changes are preserved; deleted text is not shown in this preview.")
 
     def _style_format(self, name: str, seen: frozenset[str] = frozenset()) -> dict[str, object]:
+        """Resolve supported based-on style properties with cycle and depth protection."""
         if not name or name in seen or len(seen) >= 20 or name not in self.styles:
             return {}
         style = self.styles[name]
@@ -332,6 +374,7 @@ class WordDocument:
         return values
 
     def _run_format(self, run: etree._Element | None) -> dict[str, object]:
+        """Combine character-style properties with a run's direct formatting overrides."""
         if run is None:
             return {}
         properties = run.find(W + "rPr")
@@ -342,6 +385,7 @@ class WordDocument:
         }
 
     def nodes(self) -> list[PreviewNode]:
+        """Build ordered paragraph/table preview nodes without reproducing Word layout."""
         by_element = {self.paragraphs[block.id]: block for block in self.blocks}
         result: list[PreviewNode] = []
         for child in self.body:
@@ -366,6 +410,7 @@ class WordDocument:
         return result
 
     def ai_blocks(self) -> list[Block]:
+        """Return editable blocks or reject empty/oversized model input with DemoError."""
         blocks = [block for block in self.blocks if block.editable]
         if not blocks:
             raise DemoError("There are no supported editable text blocks in this document.")
@@ -374,6 +419,7 @@ class WordDocument:
         return blocks
 
     def preview(self, edits: list[Edit]) -> list[Change]:
+        """Validate text targets, unique spans, overlap, and size; return non-mutating diffs."""
         blocks = {block.id: block for block in self.blocks}
         grouped: dict[str, list[tuple[int, int, str]]] = defaultdict(list)
         if len(edits) > 50:
@@ -405,6 +451,12 @@ class WordDocument:
         return changes
 
     def preview_plan(self, plan: EditPlan) -> list[Change]:
+        """Validate every operation and return review changes without altering the snapshot.
+
+        Require current full text for formatting and table sources, bounded formatting
+        values, and consecutive convertible table paragraphs. Table data must preserve
+        source text order; conversions cannot overlap other operations.
+        """
         if len(plan.summary) > 2000 or len(plan.edits) + len(plan.formats) + len(plan.tables) > 50:
             raise DemoError("A proposal must have a summary under 2,000 characters and at most 50 operations.")
         changes = self.preview(plan.edits)
@@ -480,6 +532,7 @@ class WordDocument:
         return changes
 
     def _format_paragraph(self, paragraph: etree._Element, formatting: ParagraphFormat) -> None:
+        """Apply specified direct properties to a paragraph's runs in OOXML schema order."""
         if formatting.alignment is not None:
             properties = _properties(paragraph, "pPr")
             _set_property(properties, "jc", "both" if formatting.alignment == "justify" else formatting.alignment, (
@@ -529,6 +582,7 @@ class WordDocument:
                     ))
 
     def _convert_table(self, edit: TableEdit) -> None:
+        """Replace validated body paragraphs with a real table using explicit DXA widths."""
         paragraphs = [self.paragraphs[block_id] for block_id in edit.block_ids]
         section = paragraphs[0].find(f"{W}pPr/{W}sectPr")
         if section is None:
@@ -578,6 +632,12 @@ class WordDocument:
             self.body.remove(paragraph)
 
     def apply_plan(self, plan: EditPlan) -> "WordDocument":
+        """Return a new snapshot containing the exact validated proposal, or raise DemoError.
+
+        Apply text changes across existing runs, then formatting and table conversions
+        on a separate document. Rewrite only word/document.xml; preserve other part
+        payloads. The source instance is never modified, including on failure.
+        """
         changes = self.preview_plan(plan)
         if not changes:
             raise DemoError("This proposal contains no changes.")
@@ -632,4 +692,5 @@ class WordDocument:
         return result
 
     def apply(self, edits: list[Edit]) -> "WordDocument":
+        """Apply a text-only plan through the same validation and package-preservation path."""
         return self.apply_plan(EditPlan(summary="", edits=edits))

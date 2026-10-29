@@ -1,0 +1,1 @@
+"""Local Wordsmith application for conversational research and Word document editing."""

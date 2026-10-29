@@ -1,3 +1,5 @@
+"""Tests for Word formatting plans, rich previews, and safe list-to-table conversion."""
+
 from io import BytesIO
 from zipfile import ZipFile
 
@@ -10,6 +12,7 @@ from conftest import change_xml
 
 
 def heading_plan(document):
+    """Build blue-color formatting operations for every heading block."""
     return EditPlan(summary="Blue headings.", edits=[], formats=[
         FormatEdit(block_id=block.id, original=block.text, format=ParagraphFormat(color="0000FF"))
         for block in document.blocks if block.kind == "heading"
@@ -17,6 +20,7 @@ def heading_plan(document):
 
 
 def scope_table(document):
+    """Describe a header-row table conversion using every existing list block."""
     blocks = [block for block in document.blocks if block.kind == "list"]
     return TableEdit(
         block_ids=[block.id for block in blocks], originals=[block.text for block in blocks],
@@ -25,6 +29,7 @@ def scope_table(document):
 
 
 def test_heading_color_changes_real_xml_and_rich_preview_without_changing_text(document):
+    """Apply heading colors in OOXML while preserving text and unrelated package parts."""
     plan = heading_plan(document)
     changes = document.preview_plan(plan)
     assert changes and all(change.kind == "format" for change in changes)
@@ -45,6 +50,7 @@ def test_heading_color_changes_real_xml_and_rich_preview_without_changing_text(d
 
 
 def test_font_size_bold_italic_alignment_and_text_can_be_combined(document):
+    """Combine text replacement with point-size, weight, italic, and alignment changes."""
     block = next(block for block in document.blocks if "30 days" in block.text)
     plan = EditPlan(
         summary="Format terms and edit text.",
@@ -62,8 +68,10 @@ def test_font_size_bold_italic_alignment_and_text_can_be_combined(document):
 
 
 def test_font_family_is_written_to_all_scripts_and_survives_preview(document):
+    """Replace theme fonts for every script and preserve the font choice in preview output."""
     block = document.blocks[0]
     def mutate(tree):
+        """Add theme font attributes to a run before testing direct font replacement."""
         run = tree.find(W + "body").find(W + "p").find(W + "r")
         properties = run.find(W + "rPr")
         if properties is None:
@@ -94,6 +102,7 @@ def test_font_family_is_written_to_all_scripts_and_survives_preview(document):
 
 @pytest.mark.parametrize("family", ["", " " * 3, "a" * 81, "Arial; color:red", "url(http://example.com)", "Arial\n"])
 def test_invalid_font_names_are_rejected_atomically(document, family):
+    """Reject blank, oversized, and markup-like font family values without mutation."""
     block = document.blocks[0]
     with pytest.raises(DemoError, match="Font families"):
         document.apply_plan(EditPlan(summary="Invalid font", edits=[], formats=[
@@ -102,8 +111,10 @@ def test_invalid_font_names_are_rejected_atomically(document, family):
 
 
 def test_direct_color_overrides_theme_color(document):
+    """Ensure a direct requested color replaces inherited theme color attributes."""
     block = next(block for block in document.blocks if block.kind == "heading")
     def mutate(tree):
+        """Attach a theme-derived red run color to the selected heading."""
         p = tree.find(W + "body").find(W + "p")
         run = p.find(W + "r")
         properties = run.find(W + "rPr")
@@ -122,6 +133,7 @@ def test_direct_color_overrides_theme_color(document):
 
 
 def test_real_table_has_dual_widths_headers_and_preserves_surrounding_content(document):
+    """Verify generated table geometry, header metadata, content mapping, and package preservation."""
     table = scope_table(document)
     updated = document.apply_plan(EditPlan(
         summary="Blue headings and scope table.", edits=[], formats=heading_plan(document).formats, tables=[table],
@@ -149,9 +161,11 @@ def test_real_table_has_dual_widths_headers_and_preserves_surrounding_content(do
 
 
 def test_table_cells_escape_xml_and_support_multiple_columns(document):
+    """Convert list blocks to a two-column table while safely escaping cell text."""
     blocks = [b for b in document.blocks if b.kind == "list"]
     originals = ["Alpha & <beta> | Week 1", "Gamma | Week 2"]
     def mutate(tree):
+        """Replace list paragraph text with values containing XML-sensitive characters."""
         paragraphs = list(tree.find(W + "body").iter(W + "p"))
         for block, text in zip(blocks, originals):
             nodes = list(paragraphs[int(block.id[1:])].iter(W + "t"))
@@ -179,6 +193,7 @@ def test_table_cells_escape_xml_and_support_multiple_columns(document):
     {"font_size_pt": float("nan")}, {"font_size_pt": float("inf")}, {},
 ])
 def test_invalid_formatting_is_rejected_atomically(document, values):
+    """Reject invalid color, point-size, or empty formatting and preserve source bytes."""
     block = document.blocks[0]
     before = document.data
     plan = EditPlan(summary="Invalid", edits=[], formats=[
@@ -191,9 +206,11 @@ def test_invalid_formatting_is_rejected_atomically(document, values):
 
 @pytest.mark.parametrize("case", ["missing", "stale", "duplicate", "readonly"])
 def test_format_targets_must_be_current_unique_and_editable(document, case):
+    """Require formatting targets to exist, match current text, be unique, and be editable."""
     block = document.blocks[0]
     if case == "readonly":
         def mutate(tree):
+            """Insert a bookmark marker so the target paragraph becomes read-only."""
             p = tree.find(W + "body").find(W + "p")
             etree.SubElement(p, W + "bookmarkStart", {W + "id": "1", W + "name": "protected"})
         document = WordDocument(change_xml(document.data, mutate), document.name)
@@ -208,6 +225,7 @@ def test_format_targets_must_be_current_unique_and_editable(document, case):
     "ragged", "empty", "no_data", "overlap_format", "overlap_text", "duplicate_table", "bad_cell",
 ])
 def test_unsafe_table_conversion_is_rejected_atomically(document, case):
+    """Reject lossy, stale, malformed, overlapping, or otherwise unsafe table plans."""
     table = scope_table(document)
     formats, edits, tables = [], [], [table]
     if case == "loss":
@@ -251,6 +269,7 @@ def test_unsafe_table_conversion_is_rejected_atomically(document, case):
 
 
 def test_run_preview_resolves_existing_mixed_formatting(document):
+    """Resolve existing bold, italic, and heading-size values in rich run previews."""
     block = next(b for b in document.blocks if "30 days" in b.text)
     assert any(run.format.bold and run.text == "30" for run in block.runs)
     assert any(run.format.italic and "$25,000" in run.text for run in block.runs)

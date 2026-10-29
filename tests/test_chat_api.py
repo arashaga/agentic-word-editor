@@ -1,3 +1,5 @@
+"""Tests for conversational editing, research drafts, and chat request replay."""
+
 from fastapi.testclient import TestClient
 import pytest
 
@@ -11,18 +13,23 @@ from app.onedrive import GraphItem, SourceReference
 
 @pytest.fixture
 def client():
+    """Create an isolated FastAPI client with demo-request headers."""
     with TestClient(create_app(Settings()), base_url="http://localhost", headers={"X-Demo-Request": "1"}) as client:
         yield client
 
 
 def session(client):
+    """Return the server-side session associated with the client's cookie."""
     return client.app.state.store.sessions[client.cookies.get(COOKIE)]
 
 
 class Team:
+    """Return predictable clarification, edit, and research outcomes to chat tests."""
     def __init__(self, sample_bytes):
+        """Store report bytes and initialize a record of agent calls."""
         self.sample_bytes, self.calls = sample_bytes, []
     async def run(self, message, history, document, selected, consent, progress, **kwargs):
+        """Record request context, emit progress, and return a message-specific result."""
         self.calls.append([message, list(history), consent, kwargs.get("pending_plan")])
         progress("Researcher: synthetic test")
         if message == "clarify":
@@ -40,19 +47,26 @@ class Team:
 
 
 class Drive:
+    """Fake OneDrive create and update operations while recording cloud writes."""
     def __init__(self, fail=False):
+        """Initialize an empty write log with an optional create failure."""
         self.writes, self.fail = [], fail
-    def connected(self): return True
+    def connected(self):
+        """Report an active cloud connection."""
+        return True
     def create_document(self, data, name, folder):
+        """Record report creation and return its reference or raise the configured error."""
         self.writes.append((data, name, folder))
         if self.fail: raise DemoError("Upload not confirmed", 504)
         return SourceReference(item_id="created", parent_id=folder or "root", name=name, etag='"v1"')
     def update(self, data, source):
+        """Record an update and return the same item with a newer ETag."""
         self.writes.append((data, source.item_id, source.etag))
         return GraphItem(id=source.item_id, name=source.name, eTag='"v2"')
 
 
 def test_research_create_followup_review_apply_and_idempotency(client, sample_bytes):
+    """Create a report once, review a follow-up edit, and apply it to the created item."""
     client.get("/api/status")
     team, drive = Team(sample_bytes), Drive()
     client.app.state.team, session(client).drive = team, drive
@@ -84,6 +98,7 @@ def test_research_create_followup_review_apply_and_idempotency(client, sample_by
 
 
 def test_research_draft_can_be_created_later_without_researching_again(client, sample_bytes):
+    """Retain a failed report draft and allow later creation without another agent call."""
     client.get("/api/status")
     drive, team = Drive(fail=True), Team(sample_bytes)
     session(client).drive, client.app.state.team = drive, team
@@ -100,6 +115,7 @@ def test_research_draft_can_be_created_later_without_researching_again(client, s
 
 
 def test_failed_auto_create_keeps_research_draft_and_reports_error(client, sample_bytes):
+    """Keep the unsaved research draft after automatic cloud creation fails."""
     client.get("/api/status")
     drive = Drive(fail=True)
     session(client).drive, client.app.state.team = drive, Team(sample_bytes)
@@ -114,6 +130,7 @@ def test_failed_auto_create_keeps_research_draft_and_reports_error(client, sampl
 
 
 def test_stale_inputs_rejected_but_pending_proposal_can_be_revised(client, sample_bytes):
+    """Reject stale or unknown selections while allowing a pending proposal to be revised."""
     client.app.state.team = Team(sample_bytes)
     view = client.post("/api/document/sample", json={}).json()
     request = {"message": "edit", "request_id": "edit", "version": "stale"}
@@ -134,6 +151,7 @@ def test_stale_inputs_rejected_but_pending_proposal_can_be_revised(client, sampl
 
 
 def test_unsaved_document_not_replaced_by_research(client, sample_bytes):
+    """Protect modified working bytes from a new research result."""
     client.app.state.team = Team(sample_bytes)
     view = client.post("/api/document/sample", json={}).json()
     session(client).modified = True
@@ -143,6 +161,7 @@ def test_unsaved_document_not_replaced_by_research(client, sample_bytes):
 
 
 def test_chat_reset_preserves_document_and_other_sessions_are_isolated(client, sample_bytes):
+    """Clear only chat history, preserving the document and isolating another session."""
     client.app.state.team = Team(sample_bytes)
     view = client.post("/api/document/sample", json={}).json()
     response = client.post("/api/chat", json={"message": "clarify", "request_id": "one", "version": view["version"]})
@@ -155,6 +174,7 @@ def test_chat_reset_preserves_document_and_other_sessions_are_isolated(client, s
 
 
 def test_noop_does_not_block_followup(client, sample_bytes):
+    """Allow a later edit after an unsupported request produced no proposal."""
     client.app.state.team = Team(sample_bytes)
     view = client.post("/api/document/sample", json={}).json()
     request = {"message": "unsupported", "request_id": "no-op", "version": view["version"]}
@@ -167,6 +187,7 @@ def test_noop_does_not_block_followup(client, sample_bytes):
 
 
 def test_messages_continue_past_old_session_and_history_caps(client, sample_bytes):
+    """Accept long conversations while keeping idempotency receipts free of chat payloads."""
     client.app.state.team = Team(sample_bytes)
     for index in range(110):
         response = client.post("/api/chat", json={"message": "clarify", "request_id": f"turn-{index}"})
@@ -176,6 +197,7 @@ def test_messages_continue_past_old_session_and_history_caps(client, sample_byte
 
 
 def test_disconnected_research_is_blocked_before_agent_call(client, sample_bytes):
+    """Reject research while Microsoft 365 is disconnected without calling the team."""
     team = Team(sample_bytes)
     client.app.state.team = team
     response = client.post("/api/chat", json={"message": "research", "request_id": "one", "allow_research": True})
@@ -184,6 +206,7 @@ def test_disconnected_research_is_blocked_before_agent_call(client, sample_bytes
 
 
 def test_replaying_old_request_returns_current_state_without_rollback(client, sample_bytes):
+    """Return current state for a replayed request rather than restoring an old proposal."""
     client.app.state.team = Team(sample_bytes)
     view = client.post("/api/document/sample", json={}).json()
     request = {"message": "edit", "request_id": "original", "version": view["version"]}

@@ -1,3 +1,5 @@
+"""Generate validated Word edit proposals through Azure structured chat completions."""
+
 from contextlib import ExitStack
 import json
 
@@ -66,10 +68,19 @@ satisfied, keep the arrays empty and explain the actual reason. Do not apply or 
 
 
 class AzureEditor:
+    """Synchronous Azure proposal client retained for the direct editing endpoint."""
+
     def __init__(self, settings: Settings) -> None:
+        """Keep model connection settings without starting a network request."""
         self.settings = settings
 
     def propose(self, document: WordDocument, instruction: str) -> EditPlan:
+        """Request and validate edits without mutating the document or saving to cloud.
+
+        Send supported editable blocks and formatting to the configured Azure model.
+        Recheck an empty plan at most once. Surface authentication, service, refusal,
+        and validation failures as DemoError rather than inventing a fallback result.
+        """
         base_url = self.settings.ai_base_url()
         blocks = document.ai_blocks()
         try:

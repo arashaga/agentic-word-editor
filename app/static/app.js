@@ -1,5 +1,7 @@
+/** @file Browser state, safe DOCX previews, conversational review, and OneDrive actions. */
 "use strict";
 
+/** Look up a required application element by its stable HTML ID. */
 const $ = id => document.getElementById(id);
 const state = {
   document: null, proposal: null, busy: false, connected: false,
@@ -9,11 +11,19 @@ const state = {
   chat: [],
 };
 
+/** Display plain-text feedback using the requested notice style. */
 function showNotice(message, kind = "error") {
   $("notice-text").textContent = message;
   $("notice").className = `notice ${kind}`;
 }
 
+/**
+ * Fetch local JSON state or post JSON/FormData with the same-origin mutation header.
+ * @param {string} path Local API route, optionally including query parameters.
+ * @param {object|FormData} [body] Omit for GET; otherwise send a POST request.
+ * @param {number} [timeout=90000] Client timeout in milliseconds; not a server cancellation.
+ * @returns {Promise<object>} Parsed response; rejects on HTTP, network, or timeout errors.
+ */
 async function api(path, body, timeout = 90000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
@@ -44,6 +54,7 @@ async function api(path, body, timeout = 90000) {
   }
 }
 
+/** Derive disabled states, save actions, and explanatory copy from current browser state. */
 function syncControls() {
   document.querySelectorAll("button, input, textarea").forEach(element => { element.disabled = state.busy; });
   const loaded = Boolean(state.document);
@@ -79,6 +90,11 @@ function syncControls() {
   $("activity").classList.toggle("working", state.busy);
 }
 
+/**
+ * Serialize UI operations, show actionable failures, and restore controls in all cases.
+ * @param {string} label Busy-state text shown while the operation runs.
+ * @param {() => Promise<unknown>} action Operation to run unless another task is busy.
+ */
 async function task(label, action) {
   if (state.busy) return;
   state.busy = true;
@@ -96,6 +112,7 @@ async function task(label, action) {
   }
 }
 
+/** Hide a link unless its destination parses as credential-free HTTPS. */
 function safeLink(element, value) {
   element.classList.add("hidden");
   element.removeAttribute("href");
@@ -110,6 +127,7 @@ function safeLink(element, value) {
   }
 }
 
+/** Apply only supported, bounded Word formatting values without interpreting model HTML. */
 function applyDocumentFormat(element, format = {}) {
   // These are validated Word document values, not application theme colors or model HTML.
   if (/^[0-9a-f]{6}$/i.test(format.color || "")) {
@@ -127,6 +145,7 @@ function applyDocumentFormat(element, format = {}) {
   if (["left", "center", "right", "justify"].includes(format.alignment)) element.style.textAlign = format.alignment;
 }
 
+/** Refresh edit-scope guidance and controls after a block-selection change. */
 function updateSelection() {
   $("selection-status").textContent = state.selected.size
     ? `${state.selected.size} block(s) selected. AI will change only these blocks.`
@@ -134,8 +153,10 @@ function updateSelection() {
   syncControls();
 }
 
+/** Build plain-text paragraph/table DOM nodes with optional editable-block selection. */
 function renderNodes(container, nodes, selectable = false) {
   container.replaceChildren();
+  /** Build one formatted block and its optional selection control. */
   function paragraph(block) {
     const item = document.createElement("div");
     item.className = "doc-item";
@@ -146,6 +167,7 @@ function renderNodes(container, nodes, selectable = false) {
       checkbox.dataset.blockId = block.id;
       checkbox.setAttribute("aria-label", `Select ${block.id}: ${block.text.slice(0, 70)}`);
       checkbox.classList.toggle("hidden", !block.editable);
+      /** Keep selection within the per-proposal 50-block bound. */
       checkbox.addEventListener("change", () => {
         if (checkbox.checked && state.selected.size >= 50) {
           checkbox.checked = false;
@@ -202,6 +224,7 @@ function renderNodes(container, nodes, selectable = false) {
   }
 }
 
+/** Install a server document view, reset stale review/selection UI, and render its preview. */
 function renderDocument(documentView) {
   state.document = documentView;
   state.proposal = null;
@@ -227,6 +250,7 @@ function renderDocument(documentView) {
   }
 }
 
+/** Split strings into equal prefix/suffix and changed middles using Unicode code points. */
 function changedParts(before, after) {
   const left = Array.from(before);
   const right = Array.from(after);
@@ -242,6 +266,7 @@ function changedParts(before, after) {
   };
 }
 
+/** Render review cards and the exact candidate preview; leave empty plans unstaged. */
 function renderProposal(proposal) {
   if (!proposal.changes.length) {
     state.proposal = null;
@@ -289,6 +314,7 @@ function renderProposal(proposal) {
   }
 }
 
+/** Render transcript text and stage history safely, then scroll to the newest message. */
 function renderChat(turns, stages = []) {
   state.chat = turns;
   const container = $("chat-history");
@@ -324,6 +350,7 @@ function renderChat(turns, stages = []) {
   }
 }
 
+/** Refresh cloud-save status and return the selected new-report folder ID, or null for root. */
 function destination() {
   const folder = state.folders[state.folders.length - 1];
   $("cloud-save-status").classList.remove("saving", "failed");
@@ -338,11 +365,13 @@ function destination() {
   return folder.id;
 }
 
+/** Require confirmation before replacing unsaved working edits or an unapplied proposal. */
 function canReplaceDocument() {
   return !(state.document?.modified || state.proposal) ||
     confirm("Replace the current working document and discard any unapplied proposal? Download or save edits first if you need them.");
 }
 
+/** Load one folder page and wire navigation while preserving breadcrumbs on failures. */
 async function browse(cursor = null) {
   const folder = state.folders[state.folders.length - 1];
   const params = new URLSearchParams();
@@ -366,6 +395,7 @@ async function browse(cursor = null) {
     const label = document.createElement("span");
     label.textContent = entry.kind === "folder" ? "FOLDER" : `WORD DOCUMENT / ${Math.ceil(entry.size / 1024)} KiB`;
     button.append(label);
+    /** Enter a folder or open a DOCX after checking for replaceable working state. */
     button.addEventListener("click", () => task(entry.kind === "folder" ? "Opening folder..." : "Downloading Word document...", async () => {
       if (entry.kind === "folder") {
         state.folders.push({ id: entry.id, name: entry.name });
@@ -380,6 +410,7 @@ async function browse(cursor = null) {
   $("drive-next").classList.toggle("hidden", !state.next);
 }
 
+/** Rehydrate configuration, connection, document, transcript, and pending review from the host. */
 async function refresh() {
   const result = await api("/api/status");
   state.aiProblem = result.ai_problem;
@@ -411,6 +442,7 @@ async function refresh() {
   if (state.connected) await browse();
 }
 
+/** Toggle the page theme and persist the choice in the URL without navigation. */
 $("theme").addEventListener("click", () => {
   const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = next;
@@ -418,14 +450,18 @@ $("theme").addEventListener("click", () => {
   url.searchParams.set("clawpilotTheme", next);
   history.replaceState(null, "", url);
 });
+/** Hide the current notice without changing application state. */
 $("dismiss").addEventListener("click", () => $("notice").classList.add("hidden"));
+/** Recover current host state, including outcomes of uncertain requests. */
 $("refresh").addEventListener("click", () => task("Refreshing state...", refresh));
+/** Open the bundled synthetic document after protecting unsaved work. */
 $("sample").addEventListener("click", () => task("Opening synthetic Word sample...", async () => {
   if (canReplaceDocument()) {
     renderDocument(await api("/api/document/sample", {}));
     renderChat([]);
   }
 }));
+/** Upload a bounded local DOCX and clear the picker so the same file can be selected again. */
 $("upload").addEventListener("change", () => task("Opening Word document...", async () => {
   const file = $("upload").files[0];
   try {
@@ -438,11 +474,13 @@ $("upload").addEventListener("change", () => task("Opening Word document...", as
     renderChat([]);
   } finally { $("upload").value = ""; }
 }));
+/** Start desktop sign-in, poll a visible fallback link, and always stop the poll on completion. */
 $("login").addEventListener("click", () => task("Complete Microsoft sign-in in the browser window...", async () => {
   $("login-pending").classList.remove("hidden");
   $("login-link").classList.add("hidden");
   let stopped = false;
   let polling;
+  /** Expose only a credential-free localhost HTTP sign-in link while login is pending. */
   const poll = async () => {
     try {
       const result = await api("/api/auth/pending");
@@ -472,23 +510,32 @@ $("login").addEventListener("click", () => task("Complete Microsoft sign-in in t
   state.folders = [{ id: null, name: "OneDrive" }];
   await refresh();
 }));
+/** Protect working state before disconnecting and reloading the cleared session view. */
 $("logout").addEventListener("click", () => task("Disconnecting Microsoft 365...", async () => {
   if (!canReplaceDocument()) return;
   await api("/api/auth/logout", {});
   await refresh();
 }));
+/** Navigate up one breadcrumb, rolling back if the folder request fails. */
 $("folder-up").addEventListener("click", () => task("Opening parent folder...", async () => {
   const removed = state.folders.pop();
   try { await browse(); } catch (error) { state.folders.push(removed); throw error; }
 }));
+/** Fetch the current folder's next server-provided page. */
 $("drive-next").addEventListener("click", () => task("Loading the next OneDrive page...", () => browse(state.next)));
+/** Reload the current folder's first page. */
 $("drive-refresh").addEventListener("click", () => task("Refreshing this OneDrive folder...", () => browse()));
+/** Send on Enter while preserving Shift+Enter and IME composition behavior. */
 $("instruction").addEventListener("keydown", event => {
   if (event.key === "Enter" && !event.shiftKey && !event.isComposing) {
     event.preventDefault();
     if (!$("generate").disabled) $("chat-form").requestSubmit();
   }
 });
+/**
+ * Send a uniquely identified chat message with snapshot, selection, and research consent.
+ * Poll progress while awaiting the host; retain explicit failures instead of claiming a save.
+ */
 $("chat-form").addEventListener("submit", event => {
   event.preventDefault();
   task("Thinking...", async () => {
@@ -507,6 +554,7 @@ $("chat-form").addEventListener("submit", event => {
   $("chat-pending").classList.remove("hidden");
   let stopped = false;
   let polling;
+  /** Mirror agent stages and cloud-saving activity until the chat request finishes. */
   const poll = async () => {
     try {
       const progress = await api("/api/chat/activity");
@@ -550,18 +598,25 @@ $("chat-form").addEventListener("submit", event => {
   }
   });
 });
+/** Clear conversation history and research consent without replacing the document. */
 $("clear-chat").addEventListener("click", () => task("Starting a new conversation...", async () => {
   await api("/api/chat/clear", {});
   $("allow-research").checked = false;
   renderChat([]);
   showNotice("New conversation started. Your current Word document is unchanged.", "success");
 }));
+/** Retry cloud creation of a retained research draft without rerunning its agents. */
 $("create-report").addEventListener("click", () => task("Creating a new report in OneDrive...", async () => {
   renderDocument(await api("/api/document/create", {version: state.document.version, folder_id: destination()}));
   destination();
   showNotice("Created a new report in OneDrive. Future edits can be saved back to this file.", "success");
   await browse();
 }));
+/**
+ * Apply the exact reviewed candidate and display its confirmed or recoverable save outcome.
+ * @param {boolean} saveAsNew Save a separate cloud file instead of updating the current item.
+ * @returns {Promise<void>} The serialized UI task, including its error-notice handling.
+ */
 function applyProposal(saveAsNew) {
   return task(saveAsNew ? "Applying and saving as a new OneDrive file..." : "Applying and saving reviewed changes...", async () => {
   $("cloud-save-title").textContent = state.document.source ? "Saving reviewed changes to OneDrive..." : "Applying local changes...";
@@ -576,8 +631,11 @@ function applyProposal(saveAsNew) {
   renderChat(status.chat);
   });
 }
+/** Apply locally or automatically save to the same opened OneDrive file. */
 $("apply").addEventListener("click", () => applyProposal(false));
+/** Apply while creating and switching to a new OneDrive copy. */
 $("apply-copy").addEventListener("click", () => applyProposal(true));
+/** Discard the pending proposal and refresh its transcript acknowledgement. */
 $("discard").addEventListener("click", () => task("Discarding proposal...", async () => {
   await api("/api/proposal/discard", {});
   state.proposal = null;
@@ -587,21 +645,25 @@ $("discard").addEventListener("click", () => task("Discarding proposal...", asyn
   const status = await api("/api/status");
   renderChat(status.chat);
 }));
+/** Clear both selected block IDs and their visible checkbox/highlight state. */
 $("clear-selection").addEventListener("click", () => {
   state.selected.clear();
   document.querySelectorAll(".block-select").forEach(checkbox => { checkbox.checked = false; });
   document.querySelectorAll(".doc-item.selected").forEach(item => item.classList.remove("selected"));
   updateSelection();
 });
+/** Clear the working document after confirmation without disconnecting OneDrive. */
 $("reset").addEventListener("click", () => task("Clearing the working document...", async () => {
   if (!canReplaceDocument()) return;
   await api("/api/document/reset", {});
   renderDocument(null);
   renderChat([]);
 }));
+/** Block download navigation while no document is available or another task is active. */
 $("download").addEventListener("click", event => {
   if (state.busy || !state.document) event.preventDefault();
 });
+/** Confirm and save an extra sibling copy without switching the active cloud source. */
 $("save").addEventListener("click", () => task("Saving a new OneDrive copy. The original is not targeted...", async () => {
   if (!confirm("Create a new edited .docx in the source OneDrive folder? The original will not be overwritten.")) return;
   const saved = await api("/api/document/save", { version: state.document.version });
@@ -611,6 +673,7 @@ $("save").addEventListener("click", () => task("Saving a new OneDrive copy. The 
   $("saved-result").classList.remove("hidden");
   showNotice("A separate Word copy was saved to OneDrive.", "success");
 }));
+/** Confirm a same-file retry; the host enforces the cloud eTag against newer edits. */
 $("update").addEventListener("click", () => task("Saving reviewed changes back to the opened OneDrive document...", async () => {
   if (!confirm(`Update "${state.document.source.name}" in OneDrive? This replaces that file's contents. Newer cloud edits will block the save.`)) return;
   const saved = await api("/api/document/update", { version: state.document.version });

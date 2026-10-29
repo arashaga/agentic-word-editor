@@ -1,3 +1,5 @@
+"""Tests for research reports, agent routing, and the Word MCP workflow."""
+
 import asyncio
 import base64
 import json
@@ -19,11 +21,13 @@ from app.reports import ResearchReport, ResearchSource, ReportSection, create_re
 
 @pytest.fixture
 def sources():
+    """Provide one synthetic public citation for report-generation tests."""
     return [ResearchSource(title="Synthetic economic release", url="https://www.bls.gov/example")]
 
 
 @pytest.fixture
 def report():
+    """Build a fictional report whose two sections cite the fixture source."""
     return ResearchReport(title="Synthetic inflation report", subtitle="Illustrative evidence, not live economic data.", sections=[
         ReportSection(heading="Findings", paragraphs=["The fictional index is illustrative."], source_ids=[1]),
         ReportSection(heading="Causes and caveats", paragraphs=["No causal inference is made."], source_ids=[1]),
@@ -31,6 +35,7 @@ def report():
 
 
 def test_report_is_real_word_with_citations_and_editable_headings(report, sources):
+    """Verify a report exports as an editable Word package with citations and layout."""
     document = create_report(report, sources)
     assert document.data.startswith(b"PK")
     assert document.name == "Synthetic inflation report.docx"
@@ -45,6 +50,7 @@ def test_report_is_real_word_with_citations_and_editable_headings(report, source
 
 @pytest.mark.parametrize("case", ["missing", "unknown", "bad_url", "bad_text", "too_big"])
 def test_invalid_reports_are_rejected(report, sources, case):
+    """Reject reports with missing sources, unsafe URLs, invalid text, or excessive size."""
     if case == "missing": sources = []
     elif case == "unknown": report.sections[0].source_ids = [2]
     elif case == "bad_url": sources[0].url = "javascript:alert(1)"
@@ -55,6 +61,7 @@ def test_invalid_reports_are_rejected(report, sources, case):
 
 
 def test_only_provider_citations_are_accepted(sources):
+    """Keep only valid provider annotations and reject prose-invented citations."""
     response = AgentResponse(messages=[Message("assistant", [
         Content("text", text="Brief", annotations=[
             {"type": "citation", "title": sources[0].title, "url": sources[0].url},
@@ -68,7 +75,9 @@ def test_only_provider_citations_are_accepted(sources):
 
 
 def test_real_mcp_protocol_edit_create_export_and_isolation(document, report, sources):
+    """Exercise document loading, formatting preview, report creation, export, and isolation."""
     async def exercise():
+        """Run the MCP operations against one tool session and check a second is empty."""
         async with word_tools() as tools:
             await tools.call("load_document", data_base64=base64.b64encode(document.data).decode(), name=document.name)
             context = await tools.call("inspect_document")
@@ -99,12 +108,16 @@ def test_real_mcp_protocol_edit_create_export_and_isolation(document, report, so
 
 
 def fake_agents(monkeypatch, route, report=None, sources=None, fail_at=None):
+    """Install role-aware fake agents and return a log of their inputs."""
     calls = []
 
     class FakeAgent:
+        """Mimic coordinator, researcher, and writer responses for team tests."""
         def __init__(self, *, name, **kwargs):
+            """Record the framework-assigned role name."""
             self.name = name
         async def run(self, message, **kwargs):
+            """Log a role invocation and return its configured synthetic response."""
             calls.append((self.name, message, kwargs))
             if self.name == fail_at:
                 raise ChatClientException("synthetic provider failure")
@@ -124,10 +137,12 @@ def fake_agents(monkeypatch, route, report=None, sources=None, fail_at=None):
 
 
 def team():
+    """Create an AgentTeam configured with synthetic Azure OpenAI credentials."""
     return AgentTeam(Settings(ai_endpoint="https://example.openai.azure.com", ai_deployment="test", ai_auth="key", ai_key="synthetic"))
 
 
 def test_team_research_uses_framework_roles_and_real_mcp(monkeypatch, report, sources):
+    """Verify research follows coordinator, researcher, and writer stages through MCP."""
     calls = fake_agents(monkeypatch, Route(action="research", task="Public synthetic economics", reply=""), report, sources)
     stages = []
     result = asyncio.run(team().run("Research it", [], None, [], True, stages.append, research_connected=True))
@@ -139,6 +154,7 @@ def test_team_research_uses_framework_roles_and_real_mcp(monkeypatch, report, so
 
 
 def test_team_does_not_send_document_to_researcher(monkeypatch, document, report, sources):
+    """Ensure research receives neither document contents nor prior editing conversation."""
     calls = fake_agents(monkeypatch, Route(action="research", task="Public synthetic economics", reply=""), report, sources)
     result = asyncio.run(team().run("Research public inflation", [ChatTurn(role="user", text="Prior edit")],
                                    document, [], True, lambda _: None, research_connected=True))
@@ -149,6 +165,7 @@ def test_team_does_not_send_document_to_researcher(monkeypatch, document, report
 
 
 def test_research_requires_consent_and_no_fake_fallback(monkeypatch):
+    """Require public-web consent before research and do not synthesize a fallback report."""
     calls = fake_agents(monkeypatch, Route(action="research", task="Inflation", reply=""))
     with pytest.raises(DemoError, match="Enable public web"):
         asyncio.run(team().run("Research", [], None, [], False, lambda _: None, research_connected=True))
@@ -156,12 +173,14 @@ def test_research_requires_consent_and_no_fake_fallback(monkeypatch):
 
 
 def test_provider_failure_is_actionable_after_mcp_cleanup(monkeypatch):
+    """Surface provider failure as an actionable error after cleaning up MCP resources."""
     fake_agents(monkeypatch, Route(action="research", task="Inflation", reply=""), fail_at="WebResearcher")
     with pytest.raises(DemoError, match="No simulated research"):
         asyncio.run(team().run("Research", [], None, [], True, lambda _: None, research_connected=True))
 
 
 def test_coordinator_can_clarify_and_uses_conversation_history(monkeypatch):
+    """Return coordinator clarification and include prior turns in its routing input."""
     calls = fake_agents(monkeypatch, Route(action="clarify", task="", reply="Which country?"))
     result = asyncio.run(team().run("Research inflation", [ChatTurn(role="user", text="Hello")],
                                    None, [], False, lambda _: None))
@@ -170,6 +189,7 @@ def test_coordinator_can_clarify_and_uses_conversation_history(monkeypatch):
 
 
 def test_disconnected_research_never_invokes_researcher(monkeypatch):
+    """Block research when Microsoft 365 is disconnected before invoking its researcher."""
     calls = fake_agents(monkeypatch, Route(action="research", task="Inflation", reply=""))
     with pytest.raises(DemoError, match="Connect Microsoft 365"):
         asyncio.run(team().run("Research", [], None, [], True, lambda _: None))
@@ -177,6 +197,7 @@ def test_disconnected_research_never_invokes_researcher(monkeypatch):
 
 
 def test_long_history_is_windowed_without_rejecting_conversation(monkeypatch):
+    """Bound serialized history by size while retaining the newest conversation turn."""
     calls = fake_agents(monkeypatch, Route(action="clarify", task="", reply="Which country?"))
     history = [ChatTurn(role="user", text=str(index) + "x" * 1000) for index in range(120)]
     asyncio.run(team().run("Continue", history, None, [], False, lambda _: None))
@@ -188,6 +209,7 @@ def test_long_history_is_windowed_without_rejecting_conversation(monkeypatch):
 
 @pytest.mark.parametrize("repair", [True, False])
 def test_real_framework_schema_and_bounded_empty_plan_recheck(monkeypatch, document, repair):
+    """Check structured formatting schema and allow at most one recheck of an empty plan."""
     requests = []
     heading = next(block for block in document.blocks if block.kind == "heading")
     empty = EditPlan(summary="The response schema has no color property.", edits=[])
@@ -195,6 +217,7 @@ def test_real_framework_schema_and_bounded_empty_plan_recheck(monkeypatch, docum
         FormatEdit(block_id=heading.id, original=heading.text, format=ParagraphFormat(color="0000FF")),
     ])
     def respond(request):
+        """Return a structured route or edit response and capture each model request."""
         body = json.loads(request.content)
         requests.append(body)
         schema = body["response_format"]["json_schema"]
@@ -211,6 +234,7 @@ def test_real_framework_schema_and_bounded_empty_plan_recheck(monkeypatch, docum
                          "message": {"role": "assistant", "content": value.model_dump_json()}}],
         })
     async def exercise():
+        """Run the real framework client against a local deterministic HTTP transport."""
         async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http:
             monkeypatch.setattr(agents, "AsyncOpenAI", lambda **kwargs: AsyncOpenAI(
                 api_key="synthetic", base_url="https://example.invalid/v1", http_client=http,

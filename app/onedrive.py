@@ -1,3 +1,5 @@
+"""Access the signed-in user's OneDrive through delegated MSAL and Microsoft Graph."""
+
 from datetime import datetime, timezone
 import re
 import socket
@@ -20,10 +22,14 @@ SCOPES = ["Files.ReadWrite"]
 
 
 class ParentReference(BaseModel):
+    """Minimal parent-folder identifier returned with Graph drive-item metadata."""
+
     id: str
 
 
 class GraphItem(BaseModel):
+    """Drive-item metadata needed for browsing, downloads, uploads, and cloud versions."""
+
     id: str
     name: str
     size: int = 0
@@ -36,11 +42,15 @@ class GraphItem(BaseModel):
 
 
 class GraphPage(BaseModel):
+    """A Graph children page with its optional validated-on-use pagination URL."""
+
     value: list[GraphItem]
     next_link: str | None = Field(default=None, alias="@odata.nextLink")
 
 
 class DriveEntry(BaseModel):
+    """Browser-facing folder or ordinary DOCX entry from the user's own drive."""
+
     id: str
     name: str
     kind: Literal["folder", "docx"]
@@ -48,6 +58,8 @@ class DriveEntry(BaseModel):
 
 
 class SourceReference(BaseModel):
+    """Opened file identity, parent, link, and eTag used for safe subsequent saves."""
+
     item_id: str
     parent_id: str
     name: str
@@ -56,6 +68,7 @@ class SourceReference(BaseModel):
 
 
 def _cloud_url(url: str, *, graph: bool = False) -> str:
+    """Allow only supported credential-free Microsoft HTTPS URLs, or raise DemoError."""
     try:
         parsed = urlsplit(url)
         host = parsed.hostname or ""
@@ -80,6 +93,7 @@ def _cloud_url(url: str, *, graph: bool = False) -> str:
 
 
 def _check(response: httpx.Response) -> None:
+    """Map unsuccessful Graph responses to actionable errors without exposing bodies."""
     if response.is_success:
         return
     status = response.status_code
@@ -101,13 +115,21 @@ def _check(response: httpx.Response) -> None:
 
 
 class OneDrive:
+    """Per-session delegated Graph client with safe download and versioned save operations."""
+
     def __init__(self, settings: Settings, transport: httpx.BaseTransport | None = None) -> None:
+        """Retain configuration and optional test transport; start without an MSAL account."""
         self.settings = settings
         self.transport = transport
         self._client: msal.PublicClientApplication | None = None
         self.login_url: str | None = None
 
     def sign_in(self) -> None:
+        """Run interactive desktop sign-in with a loopback callback and a visible fallback URL.
+
+        Keep the MSAL client only after access-token acquisition succeeds. Always clear
+        the transient login URL, and surface timeout, configuration, or consent failures.
+        """
         problem = self.settings.graph_problem()
         if problem:
             raise DemoError(problem, 503)
@@ -120,6 +142,7 @@ class OneDrive:
                 authority=f"https://login.microsoftonline.com/{self.settings.tenant_id}",
             )
             def launching(**kwargs: object) -> None:
+                """Expose the loopback welcome URL before MSAL launches the browser."""
                 self.login_url = f"http://localhost:{port}?welcome=true"
 
             result = client.acquire_token_interactive(
@@ -156,15 +179,18 @@ class OneDrive:
         self._client = client
 
     def sign_out(self) -> None:
+        """Remove cached accounts from this session's MSAL client and disconnect it."""
         if self._client is not None:
             for account in self._client.get_accounts():
                 self._client.remove_account(account)
         self._client = None
 
     def connected(self) -> bool:
+        """Report whether an MSAL client with an account exists, without fetching a token."""
         return self._client is not None and bool(self._client.get_accounts())
 
     def _token(self) -> str:
+        """Acquire a delegated token silently or raise an actionable sign-in/network error."""
         if self._client is None:
             raise DemoError("Sign in to Microsoft 365 first.", 401)
         accounts = self._client.get_accounts()
@@ -177,9 +203,11 @@ class OneDrive:
         return str(result["access_token"])
 
     def _http(self) -> httpx.Client:
+        """Create a bounded-timeout HTTP client with automatic redirects disabled."""
         return httpx.Client(transport=self.transport, timeout=45, follow_redirects=False)
 
     def _get_json(self, path: str) -> object:
+        """GET an allowlisted Graph path/URL with a bearer token and parse its JSON body."""
         url = _cloud_url(path if path.startswith("https://") else GRAPH + path, graph=True)
         try:
             with self._http() as client:
@@ -192,6 +220,7 @@ class OneDrive:
             raise DemoError("OneDrive returned an unreadable response.", 502) from exc
 
     def browse(self, folder_id: str | None, cursor: str | None) -> tuple[list[DriveEntry], str | None]:
+        """Return sorted folders/DOCX files and a next-page URL, excluding shared shortcuts."""
         path = cursor or (
             f"/me/drive/items/{quote(folder_id, safe='')}/children?$top=100"
             if folder_id else "/me/drive/root/children?$top=100"
@@ -214,6 +243,11 @@ class OneDrive:
         return entries, page.next_link
 
     def download(self, item_id: str) -> tuple[bytes, SourceReference]:
+        """Download a bounded ordinary DOCX and retain its parent and cloud version.
+
+        Validate each redirect and send the bearer token only to Graph. When an eTag
+        exists, recheck it after downloading to reject a concurrently changed file.
+        """
         escaped = quote(item_id, safe="")
         try:
             item = GraphItem.model_validate(self._get_json(f"/me/drive/items/{escaped}"))
@@ -261,6 +295,12 @@ class OneDrive:
             raise DemoError("OneDrive returned invalid document-version metadata. Reopen the file.", 502) from exc
 
     def update(self, data: bytes, source: SourceReference) -> GraphItem:
+        """Replace the same cloud item's content using its required eTag as If-Match.
+
+        Validate the returned item ID and surface conflicts or uncertain completion.
+        This method does not advance the caller's SourceReference; the host does so
+        only after a confirmed response.
+        """
         if not source.etag:
             raise DemoError("No cloud version is available for a safe update. Reopen this document from OneDrive.", 409)
         path = f"/me/drive/items/{quote(source.item_id, safe='')}/content"
@@ -287,6 +327,7 @@ class OneDrive:
             raise DemoError("OneDrive returned an unexpected update response. Check OneDrive before retrying.", 502) from exc
 
     def save_copy(self, data: bytes, source: SourceReference) -> GraphItem:
+        """Create a uniquely named edited sibling and verify it is not the original item."""
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         stem = re.sub(r'[\\/:*?"<>|]', "-", source.name[:-5])[:100]
         name = f"{stem}-edited-{stamp}-{uuid4().hex[:8]}.docx"
@@ -296,6 +337,7 @@ class OneDrive:
         return item
 
     def create_document(self, data: bytes, name: str, folder_id: str | None) -> SourceReference:
+        """Validate an owned destination folder and upload a uniquely named new report."""
         folder_path = f"/me/drive/items/{quote(folder_id, safe='')}" if folder_id else "/me/drive/root"
         try:
             folder = GraphItem.model_validate(self._get_json(folder_path))
@@ -311,6 +353,11 @@ class OneDrive:
         )
 
     def _create_upload(self, data: bytes, parent_id: str, name: str) -> GraphItem:
+        """Upload bounded bytes to a new name with conflict behavior fail.
+
+        Create the upload session through Graph, then send bytes to its allowlisted
+        preauthorized URL without a bearer token. Require a completed upload response.
+        """
         if not data or len(data) > MAX_FILE_BYTES:
             raise DemoError("Cloud document creation requires a nonempty file under 10 MiB.", 413)
         path = f"/me/drive/items/{quote(parent_id, safe='')}:/{quote(name, safe='')}:/createUploadSession"

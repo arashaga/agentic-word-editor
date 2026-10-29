@@ -1,3 +1,5 @@
+"""Tests for Word package validation, text edits, and read-only document regions."""
+
 from io import BytesIO
 import binascii
 import random
@@ -15,6 +17,7 @@ from conftest import change_xml, repack
 
 
 def test_fixture_image_integrity(sample_bytes):
+    """Validate each PNG chunk checksum and decompress any image-data chunks."""
     with ZipFile(BytesIO(sample_bytes)) as package:
         image = package.read(next(name for name in package.namelist() if name.endswith(".png")))
     assert image[:8] == b"\x89PNG\r\n\x1a\n"
@@ -31,10 +34,12 @@ def test_fixture_image_integrity(sample_bytes):
 
 
 def find_block(document, text):
+    """Return the first document block whose text contains the requested fragment."""
     return next(block for block in document.blocks if text in block.text)
 
 
 def test_round_trip_preserves_parts_and_run_formatting(document, sample_bytes):
+    """Preserve run properties and non-main package parts when editing text."""
     block = find_block(document, "30 days")
     updated = document.apply([Edit(block_id=block.id, original="30", replacement="45")])
     assert find_block(updated, "45 days").text == block.text.replace("30", "45")
@@ -54,6 +59,7 @@ def test_round_trip_preserves_parts_and_run_formatting(document, sample_bytes):
 
 
 def test_cross_run_replacement_and_multiple_edits(document):
+    """Apply multiple replacements, including text that spans Word runs."""
     block = find_block(document, "30 days")
     edits = [
         Edit(block_id=block.id, original="within 30 days", replacement="within 45 business days"),
@@ -72,6 +78,7 @@ def test_cross_run_replacement_and_multiple_edits(document):
     ("30", "45 & <60> \u201cillustrative\u201d", "paragraph"),
 ])
 def test_supported_regions_and_xml_escaping(document, old, new, kind):
+    """Edit supported block types and keep replacement characters valid in OOXML."""
     block = find_block(document, old)
     assert block.kind == kind
     updated = document.apply([Edit(block_id=block.id, original=old, replacement=new)])
@@ -81,6 +88,7 @@ def test_supported_regions_and_xml_escaping(document, old, new, kind):
 
 @pytest.mark.parametrize("replacement", ["bad\nline", "bad\ttab", "bad\x00character"])
 def test_invalid_replacement_is_atomic(document, replacement):
+    """Reject newline, tab, and null replacements without changing the source package."""
     before = document.data
     block = find_block(document, "30 days")
     with pytest.raises(DemoError, match="unsupported"):
@@ -89,6 +97,7 @@ def test_invalid_replacement_is_atomic(document, replacement):
 
 
 def test_overlap_unknown_and_nonmatching_proposals(document):
+    """Reject overlapping edits, invented block IDs, and non-unique source matches."""
     block = find_block(document, "30 days")
     with pytest.raises(DemoError, match="overlapping"):
         document.preview([
@@ -103,6 +112,7 @@ def test_overlap_unknown_and_nonmatching_proposals(document):
 
 
 def test_ambiguous_source_text(document):
+    """Reject an edit when prior edits make the requested source fragment ambiguous."""
     block = find_block(document, "30 days")
     modified = document.apply([Edit(block_id=block.id, original="30 days", replacement="30 days and 30 days")])
     with pytest.raises(DemoError, match="uniquely"):
@@ -113,7 +123,9 @@ def test_ambiguous_source_text(document):
 
 
 def test_comment_or_bookmark_region_is_readonly(sample_bytes):
+    """Mark a bookmarked paragraph read-only and prevent it from being model-editable."""
     def mutate(tree):
+        """Insert a bookmark marker into the paragraph containing the payment term."""
         paragraph = next(p for p in tree.iter(W + "p") if "30" in "".join(p.itertext()))
         paragraph.insert(1, etree.Element(W + "bookmarkStart", {W + "id": "1", W + "name": "terms"}))
     document = WordDocument(change_xml(sample_bytes, mutate), "sample.docx")
@@ -126,7 +138,9 @@ def test_comment_or_bookmark_region_is_readonly(sample_bytes):
 
 
 def test_document_protection_and_macros_rejected(sample_bytes):
+    """Reject a protected document and a package containing a VBA project."""
     def protect(tree):
+        """Add document-protection metadata to the settings part."""
         etree.SubElement(tree, W + "documentProtection", {W + "enforcement": "1"})
     with pytest.raises(DemoError, match="Protected"):
         WordDocument(change_xml(sample_bytes, protect, "word/settings.xml"), "sample.docx")
@@ -135,7 +149,9 @@ def test_document_protection_and_macros_rejected(sample_bytes):
 
 
 def test_leaf_revision_markers_are_readonly(sample_bytes):
+    """Treat a paragraph with a tracked-deletion marker as non-editable."""
     def mutate(tree):
+        """Add a deletion revision marker to the paragraph containing the payment term."""
         paragraph = next(p for p in tree.iter(W + "p") if "30" in "".join(p.itertext()))
         properties = paragraph.find(W + "pPr")
         if properties is None:
@@ -148,6 +164,7 @@ def test_leaf_revision_markers_are_readonly(sample_bytes):
 
 
 def test_file_and_expansion_limits(sample_bytes, monkeypatch):
+    """Enforce compressed upload-size and expanded-package size limits."""
     with pytest.raises(DemoError, match="10 MiB"):
         WordDocument(b"x" * (10 * 1024 * 1024 + 1), "sample.docx")
     monkeypatch.setattr(documents, "MAX_EXPANDED_BYTES", 1)
@@ -156,6 +173,7 @@ def test_file_and_expansion_limits(sample_bytes, monkeypatch):
 
 
 def test_ai_character_limit_is_not_silent_truncation(document, monkeypatch):
+    """Raise an error rather than truncating model context beyond its character budget."""
     monkeypatch.setattr(documents, "MAX_AI_CHARACTERS", 10)
     with pytest.raises(DemoError, match="30,000"):
         document.ai_blocks()
@@ -163,27 +181,32 @@ def test_ai_character_limit_is_not_silent_truncation(document, monkeypatch):
 
 @pytest.mark.parametrize("data,name", [(b"not a zip", "file.docx"), (b"", "file.doc")])
 def test_bad_files(data, name):
+    """Reject empty and non-ZIP document uploads."""
     with pytest.raises(DemoError):
         WordDocument(data, name)
 
 
 def test_rights_managed_container_has_specific_error():
+    """Identify an encrypted rights-managed Office container with a specific error."""
     data = bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 40 + "EncryptedPackage".encode("utf-16le")
     with pytest.raises(DemoError, match="still encrypted or rights-managed"):
         WordDocument(data, "test.docx")
 
 
 def test_legacy_container_is_not_mislabeled_as_encrypted():
+    """Distinguish a legacy Office container from an encrypted package."""
     with pytest.raises(DemoError, match="older Word or protected Office container"):
         WordDocument(bytes.fromhex("d0cf11e0a1b11ae1") + b"\x00" * 40, "test.docx")
 
 
 def test_broken_zip_is_not_mislabeled_as_encrypted():
+    """Report a damaged ZIP signature as an unreadable document package."""
     with pytest.raises(DemoError, match="unreadable or damaged"):
         WordDocument(b"PK\x03\x04broken", "test.docx")
 
 
 def test_doctype_is_rejected(sample_bytes):
+    """Reject an OOXML part containing a document type declaration."""
     original = WordDocument(sample_bytes, "sample.docx")
     main = original.parts[MAIN_PART]
     split = main.find(b"?>")
@@ -193,6 +216,7 @@ def test_doctype_is_rejected(sample_bytes):
 
 
 def test_randomized_span_patches_keep_exact_text(document):
+    """Check deterministic random unique-span replacements preserve surrounding text."""
     rng = random.Random(127)
     block = find_block(document, "30 days")
     for _ in range(80):

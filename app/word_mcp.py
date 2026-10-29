@@ -12,6 +12,7 @@ from app.reports import ResearchReport, ResearchSource, create_report
 
 
 def create_server() -> MCPServer:
+    """Build an isolated tool server whose document and candidate stay in closure state."""
     server = MCPServer("Wordsmith Word tools", log_level="ERROR")
     document: WordDocument | None = None
     candidate: WordDocument | None = None

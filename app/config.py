@@ -1,3 +1,5 @@
+"""Load local configuration and validate Azure model and Microsoft Graph settings."""
+
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -12,6 +14,8 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class Settings(BaseModel):
+    """Cloud connection settings, with API-key values protected from model repr output."""
+
     tenant_id: str = ""
     client_id: str = ""
     ai_endpoint: str = ""
@@ -21,6 +25,7 @@ class Settings(BaseModel):
 
     @classmethod
     def from_env(cls) -> "Settings":
+        """Load the project .env file, giving process environment values precedence."""
         env = {**dotenv_values(ROOT / ".env"), **os.environ}
         return cls(
             tenant_id=env.get("ENTRA_TENANT_ID") or "",
@@ -32,6 +37,7 @@ class Settings(BaseModel):
         )
 
     def graph_problem(self) -> str | None:
+        """Return a setup message for missing or invalid Entra IDs, or None."""
         if not self.tenant_id or not self.client_id:
             return "Set ENTRA_TENANT_ID and ENTRA_CLIENT_ID in .env, then restart."
         try:
@@ -42,6 +48,7 @@ class Settings(BaseModel):
         return None
 
     def ai_problem(self) -> str | None:
+        """Return a setup message for unsupported Azure endpoints or authentication."""
         if not self.ai_endpoint or "YOUR-RESOURCE" in self.ai_endpoint or not self.ai_deployment:
             return "Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT in .env, then restart."
         try:
@@ -81,6 +88,7 @@ class Settings(BaseModel):
         return None
 
     def ai_base_url(self) -> str:
+        """Return the validated OpenAI v1 base URL or raise DemoError with status 503."""
         problem = self.ai_problem()
         if problem:
             raise DemoError(problem, 503)

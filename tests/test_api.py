@@ -1,3 +1,5 @@
+"""HTTP API tests for document proposals, sessions, and cloud-save behavior."""
+
 from fastapi.testclient import TestClient
 import pytest
 
@@ -9,9 +11,11 @@ from app.errors import DemoError
 
 
 class TestEditor:
+    """Provide a deterministic text-edit proposal for API tests."""
     __test__ = False
 
     def propose(self, document, instruction):
+        """Replace the sample's payment-term duration with 45 days."""
         block = next(b for b in document.blocks if "30 days" in b.text)
         return EditPlan(summary="Update payment terms.", edits=[
             Edit(block_id=block.id, original="30", replacement="45"),
@@ -20,16 +24,19 @@ class TestEditor:
 
 @pytest.fixture
 def client():
+    """Create an isolated FastAPI test client with demo-request headers."""
     app = create_app(Settings())
     with TestClient(app, base_url="http://localhost", headers={"X-Demo-Request": "1"}) as client:
         yield client
 
 
 def session(client):
+    """Resolve the server-side session associated with the client's cookie."""
     return client.app.state.store.sessions[client.cookies.get(COOKIE)]
 
 
 def test_missing_configuration_and_sample_download(client, sample_bytes):
+    """Check configuration warnings and download of the unmodified sample document."""
     status = client.get("/api/status").json()
     assert status["graph_problem"] and status["ai_problem"]
     assert not status["connected"]
@@ -44,6 +51,7 @@ def test_missing_configuration_and_sample_download(client, sample_bytes):
 
 
 def test_browser_assets_revalidate_and_use_matching_revision(client):
+    """Require browser assets and the page to use cache revalidation and one revision."""
     import re
     response = client.get("/")
     assert response.headers["cache-control"] == "no-cache"
@@ -56,6 +64,7 @@ def test_browser_assets_revalidate_and_use_matching_revision(client):
 
 
 def test_real_model_configuration_is_required(client):
+    """Return a service-unavailable response when no real model endpoint is configured."""
     view = client.post("/api/document/sample", json={}).json()
     response = client.post("/api/proposal", json={"version": view["version"], "instruction": "Update terms."})
     assert response.status_code == 503
@@ -63,6 +72,7 @@ def test_real_model_configuration_is_required(client):
 
 
 def test_proposal_review_discard_apply_and_stale_version(client, sample_bytes):
+    """Exercise proposal preview, discard, stale-version rejection, and one successful apply."""
     client.app.state.editor = TestEditor()
     view = client.post("/api/document/sample", json={}).json()
     request = {"version": view["version"], "instruction": "Update payment terms."}
@@ -84,8 +94,11 @@ def test_proposal_review_discard_apply_and_stale_version(client, sample_bytes):
 
 
 def test_legacy_empty_proposal_is_not_staged(client):
+    """Keep an empty legacy proposal out of session state and proposal status."""
     class NoopEditor:
+        """Return a proposal with no operations."""
         def propose(self, document, instruction):
+            """Describe the unsupported operation without modifying the document."""
             return EditPlan(summary="Unsupported operation", edits=[])
     client.app.state.editor = NoopEditor()
     view = client.post("/api/document/sample", json={}).json()
@@ -96,18 +109,26 @@ def test_legacy_empty_proposal_is_not_staged(client):
 
 
 def test_formatting_and_table_proposal_preview_is_exact_applied_docx(client, sample_bytes):
+    """Verify rich formatting and table previews match applied output and cloud writes."""
     writes = []
     class RichDrive:
-        def connected(self): return True
+        """Serve the sample document and record its conditional cloud update."""
+        def connected(self):
+            """Report that the fake cloud drive is connected."""
+            return True
         def download(self, item_id):
+            """Return the sample package and its original cloud reference."""
             return sample_bytes, SourceReference(
                 item_id="original", parent_id="test", name="rich.docx", etag='"v1"',
             )
         def update(self, data, source):
+            """Record saved package bytes and return an advanced cloud version."""
             writes.append((data, source.item_id, source.etag))
             return GraphItem(id="original", name="rich.docx", eTag='"v2"')
     class RichEditor:
+        """Propose blue heading formatting and a table conversion of list blocks."""
         def propose(self, document, instruction):
+            """Build formatting operations and a scope table from the document lists."""
             blocks = [b for b in document.blocks if b.kind == "list"]
             return EditPlan(summary="Blue headings and scope table.", edits=[], formats=[
                 FormatEdit(block_id=b.id, original=b.text, format=ParagraphFormat(color="0000FF"))
@@ -138,6 +159,7 @@ def test_formatting_and_table_proposal_preview_is_exact_applied_docx(client, sam
 
 
 def test_selection_limits_model_targets_and_rejects_unknown_blocks(client, sample_bytes):
+    """Reject unknown or out-of-selection targets while accepting a selected payment term."""
     client.app.state.editor = TestEditor()
     view = client.post("/api/document/sample", json={}).json()
     request = {"version": view["version"], "instruction": "Change terms.", "selected_block_ids": ["unknown"]}
@@ -152,8 +174,11 @@ def test_selection_limits_model_targets_and_rejects_unknown_blocks(client, sampl
 
 
 def test_empty_plan_explains_unsupported_requests_and_cannot_apply(client, sample_bytes):
+    """Explain unsupported empty plans and prevent them from being applied."""
     class EmptyEditor:
+        """Return an empty edit plan for unsupported requests."""
         def propose(self, document, instruction):
+            """Describe the unsupported request without proposing document changes."""
             return EditPlan(summary="This operation is unsupported.", edits=[])
     client.app.state.editor = EmptyEditor()
     view = client.post("/api/document/sample", json={}).json()
@@ -165,6 +190,7 @@ def test_empty_plan_explains_unsupported_requests_and_cannot_apply(client, sampl
 
 
 def test_upload_invalid_request_and_clear(client, sample_bytes):
+    """Accept a valid upload, reject invalid package bytes, and clear the session document."""
     assert client.post("/api/document/upload", files={"file": ("sample.docx", sample_bytes)}).status_code == 200
     assert client.post("/api/document/upload", files={"file": ("not.docx", b"invalid")}).status_code == 400
     assert client.get("/api/status").json()["document"] is not None
@@ -173,20 +199,28 @@ def test_upload_invalid_request_and_clear(client, sample_bytes):
 
 
 def test_local_source_cannot_be_saved_to_onedrive(client):
+    """Reject cloud-save requests when the active document has no OneDrive source."""
     view = client.post("/api/document/sample", json={}).json()
     assert client.post("/api/document/save", json={"version": view["version"]}).status_code == 409
 
 
 def test_save_explicitly_creates_copy_only(client, sample_bytes):
+    """Save an edited source as a new cloud copy when overwrite lacks a version token."""
     calls = []
 
     class FakeDrive:
-        def connected(self): return True
+        """Simulate a connected drive that requires a new copy for this source."""
+        def connected(self):
+            """Report an active cloud connection."""
+            return True
         def download(self, item_id):
+            """Return the sample and source metadata without an ETag."""
             return sample_bytes, SourceReference(item_id="original", parent_id="folder", name="source.docx")
         def update(self, data, source):
+            """Refuse overwriting a source that has no cloud version."""
             raise DemoError("Missing cloud version; save a copy instead.", 409)
         def save_copy(self, data, source):
+            """Record copy bytes and return a distinct SharePoint item."""
             calls.append((data, source.item_id))
             return GraphItem(id="copy", name="source-edited.docx", webUrl="https://example.sharepoint.com/copy")
 
@@ -206,6 +240,7 @@ def test_save_explicitly_creates_copy_only(client, sample_bytes):
 
 
 def test_origin_and_host_guards(client):
+    """Reject foreign origins, missing demo headers, hostile hosts, and oversized bodies."""
     assert client.post("/api/document/sample", json={}, headers={"Origin": "https://evil.example"}).status_code == 403
     assert client.post("/api/document/sample", json={}, headers={"X-Demo-Request": ""}).status_code == 403
     assert client.get("/api/status", headers={"Host": "evil.example"}).status_code == 400
@@ -213,6 +248,7 @@ def test_origin_and_host_guards(client):
 
 
 def test_ai_requires_nonblank_instruction_and_session_isolation(client):
+    """Reject blank model instructions and confirm cookies isolate document sessions."""
     view = client.post("/api/document/sample", json={}).json()
     assert client.post("/api/proposal", json={"version": view["version"], "instruction": "   "}).status_code == 400
     with TestClient(client.app, base_url="http://localhost") as other:
@@ -220,6 +256,7 @@ def test_ai_requires_nonblank_instruction_and_session_isolation(client):
 
 
 def test_pending_signin_can_be_read_while_document_lock_is_held(client):
+    """Read the pending sign-in URL without waiting for the session document lock."""
     from concurrent.futures import ThreadPoolExecutor
     client.get("/api/status")
     current = session(client)
@@ -232,12 +269,18 @@ def test_pending_signin_can_be_read_while_document_lock_is_held(client):
 
 
 def test_apply_saves_same_document_and_advances_cloud_version(client, sample_bytes):
+    """Save an applied OneDrive edit once and advance the stored ETag."""
     calls = []
     class FakeDrive:
-        def connected(self): return True
+        """Return a source document and record conditional overwrite requests."""
+        def connected(self):
+            """Report an active cloud connection."""
+            return True
         def download(self, item_id):
+            """Return sample bytes and a source with its initial ETag."""
             return sample_bytes, SourceReference(item_id="original", parent_id="test", name="test.docx", etag='"1"')
         def update(self, data, source):
+            """Record the ETag used and return the updated cloud item."""
             calls.append(source.etag)
             return GraphItem(id="original", name="test.docx", eTag='"2"', webUrl="https://example.sharepoint.com/test.docx")
     client.get("/api/status")
@@ -256,8 +299,11 @@ def test_apply_saves_same_document_and_advances_cloud_version(client, sample_byt
 
 
 def test_failed_update_preserves_working_copy(client):
+    """Keep edited bytes and their original ETag after a cloud update conflict."""
     class FailedDrive:
+        """Raise a version-conflict error whenever the cloud update is attempted."""
         def update(self, data, source):
+            """Simulate a concurrent cloud edit that prevents overwriting."""
             raise DemoError("The OneDrive document changed since you opened it.", 409)
     view = client.post("/api/document/sample", json={}).json()
     current = session(client)
@@ -273,15 +319,21 @@ def test_failed_update_preserves_working_copy(client):
 @pytest.mark.parametrize("copy", [False, True])
 @pytest.mark.parametrize("fail", [False, True])
 def test_apply_cloud_destination_failure_recovery_and_no_replay(client, copy, fail):
+    """Check same-item and copy saves, preserving a retryable draft after failures."""
     writes = []
     class Drive:
-        def connected(self): return True
+        """Record update or copy attempts and optionally simulate save failures."""
+        def connected(self):
+            """Report an active cloud connection."""
+            return True
         def update(self, data, source):
+            """Record an overwrite and either fail or return the updated item."""
             writes.append(("same", data, source.item_id, source.etag))
             if fail:
                 raise DemoError("Cloud version conflict", 409)
             return GraphItem(id=source.item_id, name=source.name, eTag='"2"')
         def save_copy(self, data, source):
+            """Record a copy operation and either fail or return the new item."""
             writes.append(("copy", data, source.item_id, source.etag))
             if fail:
                 raise DemoError("Copy save not confirmed", 504)

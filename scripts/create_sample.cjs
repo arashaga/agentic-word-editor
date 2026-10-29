@@ -1,3 +1,4 @@
+/** @file Generate the synthetic demo DOCX with styled text, tables, lists, and preserved parts. */
 const fs = require("node:fs");
 const path = require("node:path");
 const {
@@ -7,6 +8,13 @@ const {
 } = require("docx");
 
 const border = { style: BorderStyle.SINGLE, size: 4, color: "D9D9D9" };
+/**
+ * Create a bordered fixture cell with explicit DXA width and optional header styling.
+ * @param {string} text Synthetic cell content.
+ * @param {number} width Cell width in twips (one twentieth of a point).
+ * @param {boolean} [header=false] Use bold text and shaded background.
+ * @returns {TableCell} A cell containing one plain-text paragraph.
+ */
 const cell = (text, width, header = false) => new TableCell({
   width: { size: width, type: WidthType.DXA },
   margins: { top: 100, bottom: 100, left: 140, right: 140 },
@@ -78,6 +86,7 @@ const doc = new Document({
 
 const output = path.join(__dirname, "..", "demo", "sample.docx");
 fs.mkdirSync(path.dirname(output), { recursive: true });
+/** Serialize the fixture and write it to the demo folder, surfacing generation failures. */
 Packer.toBuffer(doc).then(buffer => {
   fs.writeFileSync(output, buffer);
   console.log("Created demo\\sample.docx");

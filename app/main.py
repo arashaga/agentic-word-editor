@@ -1,3 +1,5 @@
+"""Serve the local browser demo and own session, review/apply, and OneDrive save state."""
+
 from dataclasses import dataclass, field
 import asyncio
 import logging
@@ -28,6 +30,8 @@ COOKIE = "word_demo_session"
 
 @dataclass
 class Proposal:
+    """Review metadata and the exact validated candidate for one document version."""
+
     id: str
     version: str
     plan: EditPlan
@@ -37,6 +41,8 @@ class Proposal:
 
 @dataclass
 class Session:
+    """In-memory document, delegated drive client, transcript, and request receipts."""
+
     id: str
     drive: OneDrive
     touched: float = field(default_factory=time.monotonic)
@@ -52,6 +58,7 @@ class Session:
     save_error: str | None = None
 
     def clear_document(self) -> None:
+        """Clear document/chat state while retaining sign-in and request-ID deduplication."""
         self.document = None
         self.source = None
         self.proposal = None
@@ -62,12 +69,16 @@ class Session:
 
 
 class SessionStore:
+    """Thread-safe registry of at most four sessions with a one-hour inactivity expiry."""
+
     def __init__(self, settings: Settings) -> None:
+        """Initialize an empty session registry sharing the application's configuration."""
         self.settings = settings
         self.sessions: dict[str, Session] = {}
         self.lock = threading.Lock()
 
     def get(self, cookie: str | None) -> Session:
+        """Refresh an existing session or create one after evicting inactive entries."""
         with self.lock:
             now = time.monotonic()
             expired = [key for key, session in self.sessions.items() if now - session.touched > 3600]
@@ -86,24 +97,34 @@ class SessionStore:
 
 
 class VersionRequest(BaseModel):
+    """Request guarded by the SHA-256 version of the current working document."""
+
     version: str
 
 
 class GenerateRequest(VersionRequest):
+    """Direct edit instruction and optional selected block IDs for a known snapshot."""
+
     instruction: str = Field(min_length=1, max_length=2000)
     selected_block_ids: list[str] = Field(default_factory=list, max_length=50)
 
 
 class ApplyRequest(VersionRequest):
+    """Reviewed proposal identity and choice of same-file save or a separate new file."""
+
     proposal_id: str
     save_as_new: bool = False
 
 
 class OpenRequest(BaseModel):
+    """Identifier of an ordinary DOCX to open from the signed-in user's drive."""
+
     item_id: str = Field(min_length=1, max_length=512)
 
 
 class ChatRequest(BaseModel):
+    """Chat message with an idempotency key, snapshot/selection, and research consent."""
+
     message: str = Field(min_length=1, max_length=2000)
     request_id: str = Field(min_length=1, max_length=64, pattern=r"^[a-zA-Z0-9-]+$")
     version: str | None = None
@@ -113,10 +134,13 @@ class ChatRequest(BaseModel):
 
 
 class CreateRequest(VersionRequest):
+    """Unsaved research-draft version and optional destination folder for a save retry."""
+
     folder_id: str | None = Field(default=None, max_length=512)
 
 
 def _session(request: Request) -> Session:
+    """Resolve the session assigned to an API request by the local-protection middleware."""
     return request.state.demo_session
 
 
@@ -124,6 +148,7 @@ SessionDependency = Annotated[Session, Depends(_session)]
 
 
 def _document(session: Session, version: str | None = None) -> WordDocument:
+    """Require a loaded document and, when provided, its exact current version."""
     if session.document is None:
         raise DemoError("Load a Word document first.", 409)
     if version is not None and session.document.version != version:
@@ -132,6 +157,7 @@ def _document(session: Session, version: str | None = None) -> WordDocument:
 
 
 def _view(session: Session) -> dict[str, object]:
+    """Serialize the working document, preview, source identity, and save-recovery state."""
     document = _document(session)
     return {
         "name": document.name, "version": document.version,
@@ -145,6 +171,7 @@ def _view(session: Session) -> dict[str, object]:
 
 
 def _proposal_view(proposal: Proposal) -> dict[str, object]:
+    """Serialize review changes and the staged candidate without applying any edits."""
     return {
         "id": proposal.id, "version": proposal.version, "summary": proposal.plan.summary,
         "changes": [change.model_dump() for change in proposal.changes],
@@ -156,6 +183,7 @@ def _proposal_view(proposal: Proposal) -> dict[str, object]:
 
 
 def _chat_view(session: Session, receipt: dict[str, object]) -> dict[str, object]:
+    """Combine lightweight request metadata with the session's current, not cached, view."""
     return {
         **receipt,
         "chat": [turn.model_dump() for turn in session.chat],
@@ -165,6 +193,7 @@ def _chat_view(session: Session, receipt: dict[str, object]) -> dict[str, object
 
 
 def _load(session: Session, data: bytes, name: str, source: SourceReference | None = None) -> dict[str, object]:
+    """Validate a new DOCX before replacing working state and clearing its old transcript."""
     document = WordDocument(data, name)
     session.clear_document()
     session.document = document
@@ -173,6 +202,7 @@ def _load(session: Session, data: bytes, name: str, source: SourceReference | No
 
 
 def _update_source(session: Session) -> GraphItem:
+    """Save current bytes to the opened item and advance source metadata after success."""
     if session.document is None or session.source is None:
         raise DemoError("Open a OneDrive document before saving.", 409)
     item = session.drive.update(session.document.data, session.source)
@@ -184,6 +214,7 @@ def _update_source(session: Session) -> GraphItem:
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
+    """Create the local-only app, session store, cloud/agent clients, routes, and static mount."""
     settings = settings or Settings.from_env()
     application = FastAPI(title="Word editing showcase", docs_url=None, redoc_url=None)
     application.add_middleware(TrustedHostMiddleware, allowed_hosts=["127.0.0.1", "localhost"])
@@ -194,21 +225,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.exception_handler(DemoError)
     async def demo_error(request: Request, exc: DemoError) -> JSONResponse:
+        """Return a safe domain error and log its route/status without document content."""
         logger.warning("Demo request failed: %s (%s)", request.url.path, exc.status)
         return JSONResponse({"error": exc.message}, status_code=exc.status)
 
     @application.exception_handler(RequestValidationError)
     async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+        """Return a generic validation error without echoing invalid request data."""
         logger.warning("Invalid request: %s", request.url.path)
         return JSONResponse({"error": "Invalid request fields or input size. Refresh and retry."}, status_code=422)
 
     @application.exception_handler(Exception)
     async def unexpected_error(request: Request, exc: Exception) -> JSONResponse:
+        """Log an unexpected exception type and return a non-sensitive HTTP 500 response."""
         logger.error("Unexpected %s in %s", type(exc).__name__, request.url.path)
         return JSONResponse({"error": "An unexpected server error occurred. Check the server console for the error type."}, status_code=500)
 
     @application.middleware("http")
     async def protect_local_api(request: Request, call_next):
+        """Guard API mutations, assign sessions, and set cache and browser-security headers."""
         if request.url.path.startswith("/api/"):
             if request.method not in ("GET", "HEAD"):
                 origin = request.headers.get("Origin")
@@ -245,10 +280,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.get("/")
     def index() -> FileResponse:
+        """Serve the browser entry page from the application's packaged static files."""
         return FileResponse(Path(__file__).parent / "static" / "index.html")
 
     @application.get("/api/status")
     def status(session: SessionDependency) -> dict[str, object]:
+        """Return setup status and recoverable document, chat, and proposal state."""
         with session.lock:
             return {
                 "graph_problem": settings.graph_problem(),
@@ -262,16 +299,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.post("/api/auth/login")
     def login(session: SessionDependency) -> dict[str, bool]:
+        """Complete interactive delegated sign-in while serializing session mutations."""
         with session.lock:
             session.drive.sign_in()
             return {"connected": True}
 
     @application.get("/api/auth/pending")
     def pending_login(session: SessionDependency) -> dict[str, str | None]:
+        """Expose the current sign-in link without waiting on the sign-in-held session lock."""
         return {"url": session.drive.login_url}
 
     @application.post("/api/auth/logout")
     def logout(session: SessionDependency) -> dict[str, bool]:
+        """Remove cached sign-in accounts and clear the session's document and transcript."""
         with session.lock:
             session.drive.sign_out()
             session.clear_document()
@@ -279,6 +319,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.get("/api/drive")
     def browse(session: SessionDependency, folder_id: str | None = None, cursor: str | None = None) -> dict[str, object]:
+        """Validate query sizes and return a supported page of the user's OneDrive entries."""
         if (folder_id and len(folder_id) > 512) or (cursor and len(cursor) > 8192):
             raise DemoError("The OneDrive folder request is too long.")
         with session.lock:
@@ -287,12 +328,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.post("/api/document/onedrive")
     def open_onedrive(body: OpenRequest, session: SessionDependency) -> dict[str, object]:
+        """Download a cloud DOCX and load it with the identity/eTag needed for later saves."""
         with session.lock:
             data, source = session.drive.download(body.item_id)
             return _load(session, data, source.name, source)
 
     @application.post("/api/document/sample")
     def sample(session: SessionDependency) -> dict[str, object]:
+        """Load the bundled synthetic DOCX without needing a cloud connection."""
         path = ROOT / "demo" / "sample.docx"
         if not path.is_file():
             raise DemoError("The sample fixture is missing. Run npm install and npm run sample.", 503)
@@ -301,18 +344,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.post("/api/document/upload")
     def upload(session: SessionDependency, file: UploadFile = File(...)) -> dict[str, object]:
+        """Read a size-bounded local upload and validate it before replacing working state."""
         data = file.file.read(MAX_FILE_BYTES + 1)
         with session.lock:
             return _load(session, data, (file.filename or "upload.docx").replace("\\", "/").rsplit("/", 1)[-1])
 
     @application.post("/api/document/reset")
     def reset(session: SessionDependency) -> dict[str, bool]:
+        """Clear the working document and chat while preserving the drive connection."""
         with session.lock:
             session.clear_document()
             return {"cleared": True}
 
     @application.post("/api/proposal")
     def propose(body: GenerateRequest, session: SessionDependency) -> dict[str, object]:
+        """Stage a direct Azure proposal after snapshot, selection, and document validation."""
         if not body.instruction.strip():
             raise DemoError("Enter an editing instruction.")
         with session.lock:
@@ -340,6 +386,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.post("/api/proposal/apply")
     def apply(body: ApplyRequest, session: SessionDependency) -> dict[str, object]:
+        """Install the reviewed candidate and save to the same cloud item or a new copy.
+
+        Local documents remain local. Expected cloud-save failures retain applied bytes
+        and report save_error, leaving download/retry recovery available. Stale proposal
+        IDs or versions are rejected before applying or saving.
+        """
         with session.lock:
             document = _document(session, body.version)
             proposal = session.proposal
@@ -378,6 +430,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.post("/api/proposal/discard")
     def discard(session: SessionDependency) -> dict[str, bool]:
+        """Drop the unapplied proposal without changing the working document."""
         with session.lock:
             session.proposal = None
             if session.chat:
@@ -386,11 +439,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.get("/api/chat/activity")
     def chat_activity(session: SessionDependency) -> dict[str, str]:
+        """Read live workflow progress without blocking on the chat-held document lock."""
         # A chat holds the document lock; activity polling must not wait on it.
         return {"activity": session.activity}
 
     @application.post("/api/chat")
     def chat(body: ChatRequest, session: SessionDependency) -> dict[str, object]:
+        """Run one conversational workflow and retain its reply, draft, or staged proposal.
+
+        Deduplicate successful request IDs and return current session state on replay.
+        Research creates a new OneDrive report; uncertain saves retain a local draft.
+        Edit results remain unapplied until review, and workflow activity is always reset.
+        """
         if not body.message.strip():
             raise DemoError("Enter a chat message.")
         with session.lock:
@@ -411,6 +471,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             stages: list[str] = []
 
             def progress(text: str) -> None:
+                """Publish the latest workflow stage and retain it in this request's receipt."""
                 session.activity = text
                 stages.append(text)
 
@@ -476,12 +537,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.post("/api/chat/clear")
     def clear_chat(session: SessionDependency) -> dict[str, bool]:
+        """Clear transcript entries without clearing the document, proposal, or receipts."""
         with session.lock:
             session.chat.clear()
             return {"cleared": True}
 
     @application.post("/api/document/create")
     def create_cloud_document(body: CreateRequest, session: SessionDependency) -> dict[str, object]:
+        """Retry creating a new unsaved research draft without rerunning web research."""
         with session.lock:
             document = _document(session, body.version)
             if session.source is not None or not session.research_draft:
@@ -493,6 +556,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.get("/api/document/download")
     def download(session: SessionDependency) -> Response:
+        """Return current DOCX bytes with a safe attachment name and no-store caching."""
         with session.lock:
             document = _document(session)
             name = document.name[:-5] + ("-edited" if session.modified else "") + ".docx"
@@ -503,6 +567,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.post("/api/document/save")
     def save(body: VersionRequest, session: SessionDependency) -> dict[str, str | None]:
+        """Create an additional cloud sibling without changing the active source reference."""
         with session.lock:
             document = _document(session, body.version)
             if session.source is None:
@@ -512,6 +577,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @application.post("/api/document/update")
     def update(body: VersionRequest, session: SessionDependency) -> dict[str, object]:
+        """Retry saving applied unsaved bytes to the same item with its cloud-version guard."""
         with session.lock:
             document = _document(session, body.version)
             if session.source is None:

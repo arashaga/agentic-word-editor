@@ -1,3 +1,5 @@
+"""Orchestrate Agent Framework roles and isolated, host-controlled Word MCP tools."""
+
 import asyncio
 import base64
 from contextlib import asynccontextmanager
@@ -25,6 +27,8 @@ from app.reports import ResearchReport, ResearchSource, valid_source
 
 
 class Route(BaseModel):
+    """Coordinator decision containing a self-contained task or conversational reply."""
+
     model_config = ConfigDict(extra="forbid")
     action: Literal["research", "edit", "answer", "clarify"]
     task: str
@@ -32,6 +36,8 @@ class Route(BaseModel):
 
 
 class ChatTurn(BaseModel):
+    """A user or assistant transcript entry with an optional agent attribution."""
+
     role: Literal["user", "assistant"]
     text: str
     agent: str = ""
@@ -39,6 +45,8 @@ class ChatTurn(BaseModel):
 
 @dataclass
 class AgentResult:
+    """Workflow output containing a reply and optional staged document, plan, or citations."""
+
     action: str
     message: str
     document: WordDocument | None = None
@@ -51,6 +59,7 @@ MAX_HISTORY_CHARACTERS = 24000
 
 
 def recent_history(history: list[ChatTurn]) -> list[ChatTurn]:
+    """Return the newest contiguous suffix of whole turns within the character budget."""
     selected: list[ChatTurn] = []
     size = 0
     for turn in reversed(history):
@@ -62,6 +71,7 @@ def recent_history(history: list[ChatTurn]) -> list[ChatTurn]:
 
 
 def structured(response: AgentResponse[T], model: type[T]) -> T:
+    """Read typed agent output, parsing response text if needed, or raise DemoError."""
     try:
         value = response.value
         if isinstance(value, model):
@@ -72,6 +82,7 @@ def structured(response: AgentResponse[T], model: type[T]) -> T:
 
 
 def research_sources(response: AgentResponse) -> list[ResearchSource]:
+    """Extract 1-30 unique valid citations from provider annotations, not generated prose."""
     sources: list[ResearchSource] = []
     seen: set[str] = set()
     for message in response.messages:
@@ -90,10 +101,14 @@ def research_sources(response: AgentResponse) -> list[ResearchSource]:
 
 
 class WordTools:
+    """Validate structured responses from the private Word MCP client session."""
+
     def __init__(self, client: ClientSession) -> None:
+        """Wrap an initialized MCP session without taking ownership of its lifetime."""
         self.client = client
 
     async def call(self, tool_name: str, **arguments: object) -> dict:
+        """Invoke a tool with a 45-second read timeout and surface protocol or tool errors."""
         result = await self.client.call_tool(tool_name, arguments, read_timeout_seconds=45)
         if not isinstance(result, CallToolResult) or result.is_error or not isinstance(result.structured_content, dict):
             raise DemoError(f"Word MCP tool {tool_name} failed. No changes were applied.", 502)
@@ -103,6 +118,7 @@ class WordTools:
         return data
 
     async def export(self) -> WordDocument:
+        """Decode and validate the worker's staged candidate as a local WordDocument."""
         data = await self.call("export_candidate")
         try:
             return WordDocument(base64.b64decode(data["data_base64"], validate=True), data["name"])
@@ -112,6 +128,11 @@ class WordTools:
 
 @asynccontextmanager
 async def word_tools() -> AsyncIterator[WordTools]:
+    """Yield tools from a fresh stdio worker with a minimal environment.
+
+    Close both MCP task groups before rethrowing workflow failures so their original
+    exceptions remain actionable. No Graph or Azure credentials are passed in env.
+    """
     # The worker inherits only the MCP SDK's minimal OS environment, not Azure/Graph tokens.
     parameters = StdioServerParameters(
         command=sys.executable, args=["-m", "app.word_mcp"], cwd=ROOT, env={"PYTHONUTF8": "1"},
@@ -171,7 +192,10 @@ and caveats. Use at most 16000 characters of prose. Each paragraph is one line, 
 
 
 class AgentTeam:
+    """Coordinate public research, cited report writing, and review-only Word editing."""
+
     def __init__(self, settings: Settings) -> None:
+        """Retain shared Azure configuration for per-workflow agent clients."""
         self.settings = settings
 
     async def run(
@@ -179,6 +203,14 @@ class AgentTeam:
         selected_ids: list[str], allow_research: bool, progress: Callable[[str], None],
         *, research_connected: bool = False, pending_plan: EditPlan | None = None,
     ) -> AgentResult:
+        """Route one message using recent history and the current document snapshot.
+
+        Research requires OneDrive connection and explicit public-search consent;
+        only its public task reaches the researcher. Editing stages a validated MCP
+        candidate, with at most one empty-plan recheck. Progress callbacks report
+        stages. The host, not this workflow, applies proposals or writes to OneDrive.
+        Raise DemoError for unsupported input, invalid output, or provider failures.
+        """
         base_url = self.settings.ai_base_url()
         try:
             async with asyncio.timeout(200):
@@ -186,6 +218,7 @@ class AgentTeam:
                     provider = get_bearer_token_provider(credential, "https://ai.azure.com/.default")
 
                     async def token() -> str:
+                        """Acquire the synchronous Entra bearer token off the event loop."""
                         return await asyncio.to_thread(provider)
 
                     async with AsyncOpenAI(

@@ -1,3 +1,5 @@
+"""Validate cited research and create editable DOCX reports using python-docx."""
+
 from datetime import datetime, timezone
 from io import BytesIO
 import re
@@ -14,12 +16,16 @@ from app.errors import DemoError
 
 
 class ResearchSource(BaseModel):
+    """A provider-returned citation title and URL, validated before report creation."""
+
     model_config = ConfigDict(extra="forbid")
     title: str
     url: str
 
 
 class ReportSection(BaseModel):
+    """Plain-text section content with one-based references into the source list."""
+
     model_config = ConfigDict(extra="forbid")
     heading: str
     paragraphs: list[str]
@@ -27,6 +33,8 @@ class ReportSection(BaseModel):
 
 
 class ResearchReport(BaseModel):
+    """Structured writer output used to construct a new, styled Word document."""
+
     model_config = ConfigDict(extra="forbid")
     title: str
     subtitle: str
@@ -34,6 +42,7 @@ class ResearchReport(BaseModel):
 
 
 def valid_source(source: ResearchSource) -> bool:
+    """Check citation length, XML-safe single-line text, and a credential-free HTTPS URL."""
     try:
         url = urlsplit(source.url)
         return (
@@ -48,6 +57,12 @@ def valid_source(source: ResearchSource) -> bool:
 
 
 def create_report(report: ResearchReport, sources: list[ResearchSource]) -> WordDocument:
+    """Create a US Letter DOCX with editable sections and numbered source references.
+
+    Validate text, citation indices, and size limits before returning a WordDocument.
+    Raise DemoError for invalid report data or an unusable template. This checks
+    citation structure, not factual accuracy, and never saves the report to OneDrive.
+    """
     if not 1 <= len(sources) <= 30 or not all(valid_source(source) for source in sources):
         raise DemoError("Research must include 1-30 valid HTTPS source citations.", 422)
     if not 1 <= len(report.sections) <= 12:
