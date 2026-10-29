@@ -1,0 +1,11 @@
+{
+  "name": "word-showcase-sample-generator",
+  "private": true,
+  "scripts": {
+    "sample": "node scripts/create_sample.cjs"
+  },
+  "devDependencies": {
+    "docx": "^9.5.1"
+  }
+}
+

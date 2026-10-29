@@ -1,0 +1,59 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+.azure/
+.azd/
+secrets/
+credentials*.json
+*token_cache*
+*msal_cache*
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Python environments, caches, and build output
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+*.egg-info/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+build/
+dist/
+
+# JavaScript dependencies and reports
+node_modules/
+coverage/
+playwright-report/
+test-results/
+
+# Local documents and generated files; keep the synthetic demo fixture
+*.docx
+!demo/sample.docx
+*.doc
+*.pdf
+uploads/
+downloads/
+output/
+outputs/
+*.log
+*.tmp
+*.bak
+~$*
+
+# Machine-specific editor and OS state
+.vscode/*
+!.vscode/tasks.json
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini

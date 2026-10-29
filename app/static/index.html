@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Wordsmith | Review-first Word editing</title>
+  <script src="/static/theme.js?v=apply-save-3"></script>
+  <link rel="stylesheet" href="/static/styles.css?v=apply-save-3">
+  <script src="/static/app.js?v=apply-save-3" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="brand-icon" aria-hidden="true">W</span><div><strong>Wordsmith</strong><span>WORD EDITING SHOWCASE</span></div></div>
+    <div class="top-actions"><span class="badge">Microsoft Agent Framework + MCP</span><button id="refresh" class="quiet">Refresh state</button><button id="theme" class="quiet" aria-label="Toggle light and dark theme">Theme</button></div>
+  </header>
+  <main>
+    <section class="intro">
+      <div><p class="eyebrow">RESEARCH. WRITE. KEEP THE CONVERSATION.</p><h1>From a question<br>to a Word document.</h1><p class="lede">A coordinator, web researcher, report writer, and Word editor work together.<br>Research with citations, create in OneDrive, then keep chatting to edit.</p></div>
+      <ol class="steps" aria-label="Demo workflow"><li><span>01</span>Ask or open</li><li><span>02</span>Keep chatting</li><li><span>03</span>Review &amp; save</li></ol>
+    </section>
+    <div id="notice" class="notice hidden" role="alert"><span id="notice-text"></span><button id="dismiss" class="quiet">Dismiss</button></div>
+    <details id="setup" class="setup hidden"><summary>Connection setup needed</summary><ul id="setup-items"></ul><p>Configure the local .env file and restart the app. No credentials belong in this page or in chat. See the README for setup.</p></details>
+    <div class="workspace">
+      <aside class="card source-panel">
+        <div class="panel-heading"><p class="eyebrow">01 / SOURCE</p><h2>Choose a document</h2></div>
+        <button id="sample" class="primary wide">Try the sample proposal</button>
+        <p class="hint">Synthetic content. Real .docx. No customer data.</p>
+        <div class="separator"><span>or bring your own</span></div>
+        <label class="upload" for="upload"><strong>Upload a Word file</strong><span>.docx only &middot; up to 10 MiB</span><input id="upload" type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"></label>
+        <section class="cloud-section">
+          <div class="row"><h3>Microsoft OneDrive</h3><span id="cloud-status" class="pill">Not connected</span></div>
+          <p class="hint">Apply saves reviewed changes to the opened OneDrive file. Choose Apply as new file to keep the original unchanged.</p>
+          <button id="login" class="secondary wide">Connect Microsoft 365</button>
+          <p id="login-help" class="hint">Connect authorizes this demo to access your OneDrive. An existing OneDrive browser login does not connect the demo automatically.</p>
+          <div id="login-pending" class="notice hidden" role="status"><div><strong>Finish sign-in in your browser</strong><p>A sign-in window should open. If it does not, use the link below on this computer, choose your OneDrive account, and return here.</p><a id="login-link" class="hidden" target="_blank" rel="noopener noreferrer">Open Microsoft sign-in</a></div></div>
+          <button id="logout" class="quiet wide hidden">Disconnect &amp; clear session</button>
+          <div id="drive-browser" class="hidden">
+            <div class="row folder-nav"><button id="folder-up" class="quiet">Up</button><span id="folder-label">OneDrive</span></div>
+            <div id="drive-items" class="drive-items"></div>
+            <button id="drive-next" class="quiet wide hidden">Next page</button>
+            <button id="drive-refresh" class="quiet wide">Refresh folder</button>
+            <p class="hint">Open Test, then choose your Word file. To create one, use OneDrive: Test &gt; New &gt; Word document, add some text, save and close Word, then refresh this folder.</p>
+            <p class="hint">Folders and .docx files in your own drive. Shared shortcuts are excluded.</p>
+          </div>
+        </section>
+        <div class="source-footnote"><strong>Review, apply, and save.</strong><p>Apply automatically saves to the same OneDrive file. Apply as new file creates a separate copy instead. Local uploads and samples can be downloaded.</p></div>
+      </aside>
+      <section class="card document-panel">
+        <div class="document-toolbar"><div><p class="eyebrow">02 / DOCUMENT</p><h2 id="document-name">Your Word document</h2></div><span id="document-status" class="pill">No file loaded</span></div>
+        <div id="empty-document" class="empty"><div class="paper-icon" aria-hidden="true">Aa</div><h3>Start with a question or a Word file.</h3><p>Ask the team to research and write a cited report.<br>Or open a sample, upload, or OneDrive document to edit.</p></div>
+        <div id="document-content" class="hidden">
+          <div class="preview-label"><span>CURRENT WORKING DOCUMENT</span><a id="source-link" class="hidden" target="_blank" rel="noopener noreferrer">Open original in Word</a></div>
+          <div class="selection-bar"><span id="selection-status"></span><button id="clear-selection" class="quiet">Clear selection</button></div>
+          <div id="document-blocks" class="document-page"></div>
+          <div id="proposed-content" class="hidden">
+            <h3 class="proposed-label">Proposed result &mdash; not applied yet</h3>
+            <div id="proposed-blocks" class="document-page"></div>
+          </div>
+          <div id="document-warnings" class="document-warnings"></div>
+        </div>
+        <div class="export-bar">
+          <a id="download" class="button secondary disabled" aria-disabled="true">Download .docx</a>
+          <button id="save" class="secondary">Save as new file</button>
+          <button id="update" class="primary hidden">Retry save to same file</button>
+          <button id="create-report" class="primary hidden">Retry report save to OneDrive</button>
+          <button id="reset" class="quiet">Clear</button>
+        </div>
+        <div id="saved-result" class="saved-result hidden" role="status"><span id="saved-name"></span><a id="saved-link" target="_blank" rel="noopener noreferrer">Open saved copy in Word</a></div>
+      </section>
+      <aside class="card ai-panel">
+        <div class="chat-header">
+          <div class="chat-heading"><div><p class="eyebrow">WORDSMITH ASSISTANT</p><h2>Let&rsquo;s work on your document</h2></div><button id="clear-chat" class="quiet" title="Clear conversation; keep the document">New chat</button></div>
+          <div class="chat-presence"><span id="ai-status" class="pill">Checking setup</span><span>Research &middot; Write &middot; Refine</span></div>
+        </div>
+        <div id="cloud-save-status" class="cloud-save-status" role="status"><strong id="cloud-save-title">Connect OneDrive to research</strong><span id="destination">Research reports are saved automatically to OneDrive.</span></div>
+        <div id="chat-history" class="chat-history" role="log" aria-live="polite" aria-label="Conversation"></div>
+        <div id="chat-pending" class="chat-pending hidden" role="status"><span class="thinking-dot" aria-hidden="true"></span><span id="chat-progress">Thinking...</span></div>
+        <details id="proposal" class="proposal hidden" aria-live="polite">
+          <summary class="row"><strong>Review proposed changes</strong><span id="change-count" class="pill"></span></summary>
+          <p id="proposal-summary"></p>
+          <div id="changes"></div>
+          <div class="proposal-actions"><button id="apply" class="primary">Apply &amp; save</button><button id="apply-copy" class="secondary">Apply as new file</button><button id="discard" class="secondary">Discard</button></div>
+          <p id="apply-help" class="hint">Apply saves to the same OneDrive file automatically. Apply as new file saves a separate copy without updating the original. You can also keep chatting to revise.</p>
+        </details>
+        <form id="chat-form" class="chat-composer">
+          <label for="instruction" class="field-label">Your message</label>
+          <textarea id="instruction" maxlength="2000" rows="2" placeholder="Ask a question or describe a change..." aria-describedby="composer-help"></textarea>
+          <div class="composer-toolbar"><label class="chat-option"><input id="allow-research" type="checkbox"> Public web research</label><button id="generate" type="submit" class="primary" aria-label="Send message">Send <span aria-hidden="true">&uarr;</span></button></div>
+          <p id="composer-help" class="composer-shortcut">Enter to send &middot; Shift+Enter for a new line</p>
+          <p id="research-help" class="composer-note">Connect Microsoft 365 before researching. You can still chat about a loaded document.</p>
+        </form>
+        <details class="chat-details"><summary>About this assistant</summary>
+          <p id="ai-help" class="hint"></p>
+          <p class="hint">No message-count limit. Long conversations use recent messages and the current document for model context. Older messages remain in the chat until cleared or the session expires.</p>
+          <p class="hint">Supports text, font family, size, colors, bold/italic, alignment, and paragraph-to-table conversion. Fonts are not embedded; Word may substitute unavailable fonts.</p>
+          <p class="hint">Messages, recent history and supported document content go to your configured Azure model. Public web search is billable preview; queries/results may leave Azure geographic/compliance boundaries under Bing terms. Word document contents are not sent to web search. Do not enter secrets.</p>
+          <details id="workflow-details"><summary>Last workflow</summary><div id="agent-stages" class="agent-stages"></div></details>
+        </details>
+      </aside>
+    </div>
+    <footer><span id="activity" role="status" aria-live="polite">Ready</span><span>Research saved to OneDrive &middot; review then apply &amp; save</span></footer>
+  </main>
+</body>
+</html>

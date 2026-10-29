@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "word-editing-showcase"
+version = "0.1.0"
+description = "A local, review-first AI editing showcase for real Word documents."
+requires-python = ">=3.11"
+dependencies = [
+    "agent-framework-core>=1.22,<2",
+    "agent-framework-openai>=1.17,<2",
+    "azure-identity>=1.19,<2",
+    "fastapi>=0.115,<1",
+    "httpx>=0.28,<1",
+    "lxml>=5.3,<7",
+    "msal>=1.31,<2",
+    "mcp==2.2.0",
+    "openai>=2,<3",
+    "pydantic>=2.10,<3",
+    "python-dotenv>=1.0,<2",
+    "python-multipart>=0.0.20,<1",
+    "python-docx>=1.2,<2",
+    "requests>=2.32,<3",
+    "uvicorn>=0.32,<1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pyright>=1.1.400", "defusedxml>=0.7", "types-lxml"]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.setuptools.package-data]
+app = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pyright]
+include = ["app"]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
